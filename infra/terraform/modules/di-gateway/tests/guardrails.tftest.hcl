@@ -1,0 +1,195 @@
+# Plan-only tests for the placement guardrails and rendered named values.
+# Providers are mocked, so no Azure credentials are needed:
+#   cd infra/terraform/modules/di-gateway && terraform init -backend=false && terraform test
+
+mock_provider "azurerm" {}
+mock_provider "azapi" {}
+
+variables {
+  location               = "australiaeast"
+  rg_name                = "rg-test"
+  pe_subnet_id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Network/virtualNetworks/vnet/subnets/snet-pe"
+  dns_zone_id            = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Network/privateDnsZones/privatelink.cognitiveservices.azure.com"
+  apim_id                = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.ApiManagement/service/apim-test"
+  apim_name              = "apim-test"
+  apim_principal_id      = "11111111-1111-1111-1111-111111111111"
+  signing_secret_id      = "https://kv-test.vault.azure.net/secrets/result-signing-key"
+  signing_secret_prev_id = "https://kv-test.vault.azure.net/secrets/result-signing-key-prev"
+  entra_tenant_id        = "22222222-2222-2222-2222-222222222222"
+  gateway_audience       = "api://di-gateway-test"
+  dispatcher_app_id      = "33333333-3333-3333-3333-333333333333"
+  gateway_host           = "di.internal.example"
+
+  di_cells = {
+    "t-gen-a"  = { zone = "general", members = { "di-t-gen-a1" = { weight = 1 }, "di-t-gen-a2" = { weight = 3 } } }
+    "t-conf-a" = { zone = "confidential", members = { "di-t-conf-a1" = { weight = 1 }, "di-t-conf-a2" = { weight = 1 } } }
+    "t-res-a"  = { zone = "restricted", members = { "di-t-res-a1" = { weight = 1 } } }
+  }
+  di_overflow = {
+    general      = { "di-t-ovf-gen-1" = { weight = 1 } }
+    confidential = { "di-t-ovf-conf-1" = { weight = 1 } }
+  }
+  di_tenants = {
+    "3f1c0d8e-0000-0000-0000-000000000001" = { cell = "t-gen-a", tier = "standard", overflow = true, modelPrefix = "t001-" }
+    "3f1c0d8e-0000-0000-0000-000000000003" = { cell = "t-conf-a", tier = "gold", overflow = true, modelPrefix = "t003-" }
+    "3f1c0d8e-0000-0000-0000-000000000005" = { cell = "t-res-a", tier = "standard", overflow = false, modelPrefix = "t005-" }
+  }
+}
+
+run "valid_config_plans" {
+  command = plan
+
+  assert {
+    condition     = length(azurerm_cognitive_account.di) == 7
+    error_message = "Expected 7 DI accounts (5 cell members + 2 overflow)."
+  }
+
+  assert {
+    condition     = alltrue([for a in azurerm_cognitive_account.di : a.public_network_access_enabled == false && a.local_auth_enabled == false])
+    error_message = "Every DI account must have public access and local auth disabled."
+  }
+
+  assert {
+    condition     = length(azapi_resource.cell_pool) == 3 && length(azapi_resource.overflow_pool) == 2
+    error_message = "Expected one pool per cell and one overflow pool per zone."
+  }
+
+  assert {
+    condition     = azapi_resource.overflow_pool["general"].name == "pool-overflow-general" && azapi_resource.overflow_pool["confidential"].name == "pool-overflow-confidential"
+    error_message = "Overflow pool names must match the policy's pool-overflow-<zone> convention."
+  }
+
+  assert {
+    condition     = jsondecode(base64decode(azurerm_api_management_named_value.tenant_cell_map.value))["3f1c0d8e-0000-0000-0000-000000000003"].zone == "confidential"
+    error_message = "tenant-cell-map must carry the zone derived from the tenant's cell."
+  }
+
+  assert {
+    condition     = jsondecode(base64decode(azurerm_api_management_named_value.di_host_map.value))["di-t-gen-a1.cognitiveservices.azure.com"] == "di-t-gen-a1"
+    error_message = "di-host-map must map DI hostnames to stable backend keys."
+  }
+
+  assert {
+    condition     = alltrue([for n in azurerm_api_management_named_value.signing : n.secret == true])
+    error_message = "Signing keys must be secret Key Vault references."
+  }
+
+  assert {
+    condition     = output.regional_di_count == 7
+    error_message = "Regional count should equal gateway-managed accounts when dedicated_di_count is 0."
+  }
+}
+
+run "name_suffix_changes_hosts_not_backend_keys" {
+  command = plan
+
+  variables {
+    di_name_suffix = "-x1"
+  }
+
+  assert {
+    condition     = azurerm_cognitive_account.di["di-t-gen-a1"].custom_subdomain_name == "di-t-gen-a1-x1"
+    error_message = "Suffix must apply to the DI subdomain."
+  }
+
+  assert {
+    condition     = jsondecode(base64decode(azurerm_api_management_named_value.di_host_map.value))["di-t-gen-a1-x1.cognitiveservices.azure.com"] == "di-t-gen-a1"
+    error_message = "Backend key must stay the bare member name so tickets survive resource replacement."
+  }
+}
+
+run "tenant_with_unknown_cell_fails" {
+  command = plan
+
+  variables {
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000009" = { cell = "t-gen-zz", tier = "standard", overflow = false, modelPrefix = "t009-" }
+    }
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "restricted_tenant_with_overflow_fails" {
+  command = plan
+
+  variables {
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000005" = { cell = "t-res-a", tier = "standard", overflow = true, modelPrefix = "t005-" }
+    }
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "overflow_without_zone_pool_fails" {
+  command = plan
+
+  variables {
+    di_overflow = {
+      general = { "di-t-ovf-gen-1" = { weight = 1 } }
+    }
+  }
+
+  # t003 is confidential with overflow = true, but no confidential pool exists.
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "regional_limit_fails" {
+  command = plan
+
+  variables {
+    dedicated_di_count = 14 # 7 + 14 = 21 > 20
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "pool_member_limit_fails" {
+  command = plan
+
+  variables {
+    max_pool_members  = 1
+    regional_di_limit = 100
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "member_shared_across_pools_fails" {
+  command = plan
+
+  variables {
+    di_overflow = {
+      general      = { "di-t-gen-a1" = { weight = 1 } } # already a member of t-gen-a
+      confidential = { "di-t-ovf-conf-1" = { weight = 1 } }
+    }
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}
+
+run "restricted_overflow_pool_rejected" {
+  command = plan
+
+  variables {
+    di_overflow = {
+      general    = { "di-t-ovf-gen-1" = { weight = 1 } }
+      restricted = { "di-t-ovf-res-1" = { weight = 1 } }
+    }
+  }
+
+  expect_failures = [var.di_overflow]
+}
+
+run "unknown_tier_rejected" {
+  command = plan
+
+  variables {
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000001" = { cell = "t-gen-a", tier = "platinum", overflow = false, modelPrefix = "t001-" }
+    }
+  }
+
+  expect_failures = [var.di_tenants]
+}

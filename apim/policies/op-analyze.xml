@@ -1,0 +1,98 @@
+<policies>
+  <inbound>
+    <base />
+    <set-variable name="cell"      value="@((string)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;cell&quot;])" />
+    <set-variable name="tier"      value="@((string)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;tier&quot;])" />
+    <set-variable name="overflow"  value="@((bool)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;overflow&quot;])" />
+    <set-variable name="modelId"   value="@(context.Request.MatchedParameters[&quot;modelId&quot;])" />
+
+    <!-- Model allowlist: prebuilt models, or custom models carrying this tenant's prefix. -->
+    <choose>
+      <when condition="@{
+          var m = (string)context.Variables[&quot;modelId&quot;];
+          var p = (string)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;modelPrefix&quot;];
+          return !(m.StartsWith(&quot;prebuilt-&quot;) || (!string.IsNullOrEmpty(p) &amp;&amp; m.StartsWith(p)));
+      }">
+        <return-response><set-status code="403" reason="Model not permitted for tenant" /></return-response>
+      </when>
+    </choose>
+
+    <!-- Inline uploads capped at 50 MB; larger documents must use urlSource from staged Blob. -->
+    <choose>
+      <when condition="@(long.Parse(context.Request.Headers.GetValueOrDefault(&quot;Content-Length&quot;, &quot;0&quot;)) &gt; 52428800)">
+        <return-response><set-status code="413" reason="Use urlSource for documents over 50 MB" /></return-response>
+      </when>
+    </choose>
+
+    <!-- Per-tenant admission: 5 s sliding window allows short bursts while holding the average. -->
+    <choose>
+      <when condition="@((string)context.Variables[&quot;tier&quot;] == &quot;gold&quot;)">
+        <rate-limit-by-key calls="30" renewal-period="5"
+                           counter-key="@(&quot;an:&quot; + (string)context.Variables[&quot;tenant&quot;])"
+                           retry-after-header-name="Retry-After" />
+      </when>
+      <otherwise>
+        <rate-limit-by-key calls="10" renewal-period="5"
+                           counter-key="@(&quot;an:&quot; + (string)context.Variables[&quot;tenant&quot;])"
+                           retry-after-header-name="Retry-After" />
+      </otherwise>
+    </choose>
+    <quota-by-key calls="200000" renewal-period="86400"
+                  counter-key="@(&quot;q:&quot; + (string)context.Variables[&quot;tenant&quot;])" />
+
+    <rewrite-uri template="@(&quot;/documentModels/&quot; + (string)context.Variables[&quot;modelId&quot;] + &quot;:analyze&quot;)" copy-unmatched-params="true" />
+    <set-backend-service backend-id="@(&quot;pool-&quot; + (string)context.Variables[&quot;cell&quot;])" />
+  </inbound>
+
+  <backend>
+    <!-- Attempt 1: cell pool. Attempt 2: cell pool again (skips tripped member).
+         Attempt 3: the tenant's ZONE overflow pool, only if allowed and within its overflow cap. -->
+    <retry condition="@(context.Response == null || context.Response.StatusCode == 429 || context.Response.StatusCode == 503)"
+           count="2" interval="0" first-fast-retry="true">
+      <choose>
+        <when condition="@(context.Variables.ContainsKey(&quot;attempt&quot;) &amp;&amp; (int)context.Variables[&quot;attempt&quot;] &gt;= 1 &amp;&amp; (bool)context.Variables[&quot;overflow&quot;])">
+          <cache-lookup-value key="@(&quot;ovf:&quot; + (string)context.Variables[&quot;tenant&quot;] + &quot;:&quot; + (DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond / 10))"
+                              variable-name="ovfCount" caching-type="external" />
+          <choose>
+            <when condition="@((int)context.Variables.GetValueOrDefault(&quot;ovfCount&quot;, 0) &lt; 30)">
+              <cache-store-value key="@(&quot;ovf:&quot; + (string)context.Variables[&quot;tenant&quot;] + &quot;:&quot; + (DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond / 10))"
+                                 value="@((int)context.Variables.GetValueOrDefault(&quot;ovfCount&quot;, 0) + 1)"
+                                 duration="20" caching-type="external" />
+              <set-backend-service backend-id="@(&quot;pool-overflow-&quot; + (string)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;zone&quot;])" />
+            </when>
+          </choose>
+        </when>
+      </choose>
+      <set-variable name="attempt" value="@(context.Variables.ContainsKey(&quot;attempt&quot;) ? (int)context.Variables[&quot;attempt&quot;] + 1 : 0)" />
+      <forward-request buffer-request-body="true" timeout="60" />
+    </retry>
+  </backend>
+
+  <outbound>
+    <base />
+    <!-- Replace DI's Operation-Location with a signed, tenant-bound gateway URL. -->
+    <choose>
+      <when condition="@(context.Response.StatusCode == 202)">
+        <!-- Named value holds base64(JSON); see api-di-v1.xml. -->
+        <set-variable name="hostMap" value="@(Encoding.UTF8.GetString(Convert.FromBase64String(&quot;{{di-host-map}}&quot;)))" />
+        <set-header name="Operation-Location" exists-action="override">
+          <value>@{
+            var op   = new Uri(context.Response.Headers.GetValueOrDefault(&quot;Operation-Location&quot;, &quot;&quot;));
+            var key  = (string)JObject.Parse((string)context.Variables[&quot;hostMap&quot;])[op.Host];
+            var m    = Regex.Match(op.AbsolutePath, &quot;documentModels/([^/]+)/analyzeResults/([^/?]+)&quot;);
+            var raw  = string.Join(&quot;|&quot;, key, m.Groups[1].Value, m.Groups[2].Value, (string)context.Variables[&quot;tenant&quot;]);
+            var body = Convert.ToBase64String(Encoding.UTF8.GetBytes(raw)).TrimEnd('=').Replace('+','-').Replace('/','_');
+            using (var h = new HMACSHA256(Convert.FromBase64String(&quot;{{result-signing-key}}&quot;))) {
+              var sig = Convert.ToBase64String(h.ComputeHash(Encoding.UTF8.GetBytes(body))).TrimEnd('=').Replace('+','-').Replace('/','_');
+              return &quot;https://{{gateway-host}}/di/v1/results/&quot; + body + &quot;.&quot; + sig;
+            }
+          }</value>
+        </set-header>
+      </when>
+    </choose>
+  </outbound>
+
+  <on-error>
+    <base />
+  </on-error>
+</policies>

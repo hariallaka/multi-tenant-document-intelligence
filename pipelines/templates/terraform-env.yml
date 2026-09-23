@@ -1,0 +1,106 @@
+# Plan (published as an artifact) and apply one environment with a WIF service connection.
+parameters:
+  - name: environment
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: dependsOn
+    type: string
+  - name: applyCondition
+    type: string
+    default: succeeded()
+  - name: manualApproval
+    type: boolean
+    default: false
+
+stages:
+  - stage: Plan_${{ parameters.environment }}
+    displayName: Plan ${{ parameters.environment }}
+    dependsOn: ${{ parameters.dependsOn }}
+    jobs:
+      - job: plan
+        displayName: terraform plan
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: terraform init + plan
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true # exposes idToken for OIDC; no client secret
+              inlineScript: |
+                set -euo pipefail
+                export ARM_USE_OIDC=true ARM_USE_AZUREAD=true
+                export ARM_CLIENT_ID="$servicePrincipalId" ARM_TENANT_ID="$tenantId" ARM_OIDC_TOKEN="$idToken"
+                cd $(tfRoot)/envs/${{ parameters.environment }}
+                terraform init -input=false
+                terraform plan -input=false -out=tfplan
+                terraform show -no-color tfplan > tfplan.txt
+
+          # The plan file holds sensitive values (e.g. the Redis connection string):
+          # restrict artifact access to the platform team.
+          - publish: $(tfRoot)/envs/${{ parameters.environment }}/tfplan
+            artifact: tfplan-${{ parameters.environment }}
+            displayName: Publish plan
+
+          - publish: $(tfRoot)/envs/${{ parameters.environment }}/tfplan.txt
+            artifact: tfplan-${{ parameters.environment }}-text
+            displayName: Publish plan (text)
+
+  - ${{ if parameters.manualApproval }}:
+      - stage: Approve_${{ parameters.environment }}
+        displayName: Approve ${{ parameters.environment }}
+        dependsOn: Plan_${{ parameters.environment }}
+        condition: ${{ parameters.applyCondition }}
+        jobs:
+          - job: approve
+            pool: server
+            timeoutInMinutes: 4320
+            steps:
+              - task: ManualValidation@1
+                timeoutInMinutes: 4320
+                inputs:
+                  notifyUsers: "[DaaS]\\DI Gateway Approvers" # TODO: approver group
+                  instructions: Review the published tfplan-${{ parameters.environment }} artifact before approving.
+                  onTimeout: reject
+
+  - stage: Apply_${{ parameters.environment }}
+    displayName: Apply ${{ parameters.environment }}
+    ${{ if parameters.manualApproval }}:
+      dependsOn:
+        - Plan_${{ parameters.environment }}
+        - Approve_${{ parameters.environment }}
+    ${{ else }}:
+      dependsOn: Plan_${{ parameters.environment }}
+    condition: ${{ parameters.applyCondition }}
+    jobs:
+      # Environment checks (approvals, business hours) are configured on the
+      # Azure DevOps environment itself, in addition to the approval stage above.
+      - deployment: apply
+        displayName: terraform apply
+        environment: di-gateway-${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: tfplan-${{ parameters.environment }}
+
+                - task: AzureCLI@2
+                  displayName: terraform apply (saved plan)
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_USE_OIDC=true ARM_USE_AZUREAD=true
+                      export ARM_CLIENT_ID="$servicePrincipalId" ARM_TENANT_ID="$tenantId" ARM_OIDC_TOKEN="$idToken"
+                      cd $(tfRoot)/envs/${{ parameters.environment }}
+                      terraform init -input=false
+                      terraform apply -input=false "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan"

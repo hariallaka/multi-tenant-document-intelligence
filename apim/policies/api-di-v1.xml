@@ -1,0 +1,77 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}" output-token-variable-name="jwt"
+                             failed-validation-httpcode="401">
+      <audiences><audience>{{di-gateway-audience}}</audience></audiences>
+    </validate-azure-ad-token>
+
+    <!-- Caller identity: v2 tokens carry azp, v1 carry appid. Never trust a client header for tenant. -->
+    <set-variable name="caller" value="@{
+        var jwt = (Jwt)context.Variables[&quot;jwt&quot;];
+        return jwt.Claims.GetValueOrDefault(&quot;azp&quot;, jwt.Claims.GetValueOrDefault(&quot;appid&quot;, &quot;&quot;));
+    }" />
+
+    <!-- Only the platform dispatcher may act on behalf of a tenant (batch path). -->
+    <set-variable name="tenant" value="@{
+        var caller = (string)context.Variables[&quot;caller&quot;];
+        if (caller == &quot;{{dispatcher-app-id}}&quot;)
+            return context.Request.Headers.GetValueOrDefault(&quot;x-daas-tenant&quot;, &quot;&quot;);
+        return caller;
+    }" />
+
+    <!-- Named value holds base64(JSON) so the JSON's double quotes cannot break this XML attribute. -->
+    <set-variable name="tenantMap" value="@(Encoding.UTF8.GetString(Convert.FromBase64String(&quot;{{tenant-cell-map}}&quot;)))" />
+    <set-variable name="tenantCfg" value="@{
+        var map = JObject.Parse((string)context.Variables[&quot;tenantMap&quot;]);
+        var cfg = map[(string)context.Variables[&quot;tenant&quot;]];
+        return cfg == null ? &quot;&quot; : cfg.ToString(Newtonsoft.Json.Formatting.None);
+    }" />
+    <choose>
+      <when condition="@(string.IsNullOrEmpty((string)context.Variables[&quot;tenantCfg&quot;]))">
+        <return-response>
+          <set-status code="403" reason="Tenant not onboarded" />
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- Gateway authenticates to DI with its managed identity; tenant tokens never reach DI. -->
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    <set-header name="x-daas-tenant" exists-action="delete" />
+    <set-query-parameter name="api-version" exists-action="override">
+      <value>2024-11-30</value>
+    </set-query-parameter>
+  </inbound>
+
+  <backend>
+    <base />
+  </backend>
+
+  <outbound>
+    <base />
+    <!-- One contract for tenants: throttling and breaker exhaustion both surface as 429 + Retry-After. -->
+    <choose>
+      <when condition="@(context.Response.StatusCode == 429 || context.Response.StatusCode == 503)">
+        <set-status code="429" reason="Too Many Requests" />
+        <set-header name="Retry-After" exists-action="skip">
+          <value>10</value>
+        </set-header>
+      </when>
+    </choose>
+    <set-header name="x-daas-tenant" exists-action="override">
+      <value>@((string)context.Variables[&quot;tenant&quot;])</value>
+    </set-header>
+  </outbound>
+
+  <on-error>
+    <base />
+    <choose>
+      <when condition="@(context.LastError.Source == &quot;rate-limit-by-key&quot; || context.LastError.Source == &quot;forward-request&quot;)">
+        <return-response>
+          <set-status code="429" reason="Too Many Requests" />
+          <set-header name="Retry-After" exists-action="override"><value>10</value></set-header>
+        </return-response>
+      </when>
+    </choose>
+  </on-error>
+</policies>

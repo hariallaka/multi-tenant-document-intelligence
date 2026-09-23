@@ -1,0 +1,92 @@
+openapi: 3.0.3
+info:
+  title: Document Intelligence Gateway
+  version: "1.0"
+  description: |
+    Shared, multi-tenant Azure AI Document Intelligence (v4.0, S0) behind APIM.
+    Tenants authenticate with an Entra token for the gateway audience; the tenant is
+    the token's client ID (azp/appid). Only the batch dispatcher may set x-daas-tenant.
+    Throttling and cell exhaustion always surface as 429 with Retry-After.
+servers:
+  - url: https://{gatewayHost}/di/v1
+    variables:
+      gatewayHost:
+        default: di.internal.example
+security:
+  - entra: []
+paths:
+  /documentModels/{modelId}/analyze:
+    post:
+      operationId: analyze
+      summary: Submit a document for analysis
+      description: |
+        Routed to the tenant's home cell pool; retried once within the cell and, for
+        overflow-enabled tenants, once into the tenant's zone overflow pool.
+        Allowed models: prebuilt-* or the tenant's own model prefix.
+        Inline uploads are capped at 50 MB; larger documents must use urlSource.
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: pages
+          in: query
+          required: false
+          schema: { type: string }
+          description: Page range, as in the DI analyze API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                urlSource: { type: string, format: uri }
+                base64Source: { type: string, format: byte }
+          application/pdf:
+            schema: { type: string, format: binary }
+          image/*:
+            schema: { type: string, format: binary }
+      responses:
+        "202":
+          description: Accepted.
+          headers:
+            Operation-Location:
+              description: Signed, tenant-bound gateway result URL (https://{gatewayHost}/di/v1/results/{ticket}).
+              schema: { type: string, format: uri }
+        "401": { description: "Missing or invalid Entra token." }
+        "403": { description: "Tenant not onboarded, or model not permitted for tenant." }
+        "413": { description: "Inline document over 50 MB; use urlSource." }
+        "429":
+          description: Tenant limit reached or cell exhausted.
+          headers:
+            Retry-After: { schema: { type: integer } }
+  /results/{ticket}:
+    get:
+      operationId: result
+      summary: Poll an analyze result
+      description: |
+        Pinned to the DI resource that accepted the job; never retried or failed over.
+        Poll at most once every 2 seconds per result.
+      parameters:
+        - name: ticket
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$" }
+      responses:
+        "200": { description: "Analyze result (status running, succeeded or failed)." }
+        "401": { description: "Missing or invalid Entra token." }
+        "404": { description: "Unknown, tampered or other-tenant ticket." }
+        "429":
+          description: Polled faster than once per 2 s, or the resource is throttled.
+          headers:
+            Retry-After: { schema: { type: integer } }
+components:
+  securitySchemes:
+    entra:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
+          scopes:
+            api://di-gateway/.default: Call the DI gateway

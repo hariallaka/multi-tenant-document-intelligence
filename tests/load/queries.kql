@@ -1,0 +1,23 @@
+// Log Analytics queries used to judge the load tests (APIM resource-specific tables).
+
+// retry-lands-elsewhere (test 3): per request, backends attempted in order.
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h) and OperationId == "analyze"
+| summarize attempts = make_list(BackendId), codes = make_list(BackendResponseCode) by CorrelationId
+| where array_length(attempts) > 1
+| extend landedElsewhere = tostring(attempts[0]) != tostring(attempts[1])
+| summarize requests = count(), landedElsewhere = countif(landedElsewhere)
+
+// overflow-by-zone (test 4): which tenants reached which overflow pool, per 10 s window.
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h) and OperationId == "analyze"
+| extend tenant = tostring(parse_json(ResponseHeaders)["x-daas-tenant"])
+| where BackendId startswith "pool-overflow-"
+| summarize overflowCalls = count() by tenant, BackendId, bin(TimeGenerated, 10s)
+| order by overflowCalls desc
+
+// per-tenant 429s and p95 latency (tests 1-2).
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h)
+| extend tenant = tostring(parse_json(ResponseHeaders)["x-daas-tenant"])
+| summarize requests = count(), throttled = countif(ResponseCode == 429), p95 = percentile(TotalTime, 95) by tenant, OperationId

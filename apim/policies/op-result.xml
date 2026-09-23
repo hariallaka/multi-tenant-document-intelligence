@@ -1,0 +1,46 @@
+<policies>
+  <inbound>
+    <base />
+    <!-- Verify signature (current or previous key) and tenant ownership; decode to backend|model|result|tenant. -->
+    <set-variable name="ticket" value="@{
+        var t = ((string)context.Request.MatchedParameters[&quot;ticket&quot;]).Split('.');
+        if (t.Length != 2) return &quot;&quot;;
+        Func&lt;string, string&gt; sign = k =&gt; {
+            using (var h = new HMACSHA256(Convert.FromBase64String(k)))
+                return Convert.ToBase64String(h.ComputeHash(Encoding.UTF8.GetBytes(t[0]))).TrimEnd('=').Replace('+','-').Replace('/','_');
+        };
+        if (t[1] != sign(&quot;{{result-signing-key}}&quot;) &amp;&amp; t[1] != sign(&quot;{{result-signing-key-prev}}&quot;)) return &quot;&quot;;
+        var b = t[0].Replace('-','+').Replace('_','/');
+        b = b.PadRight(b.Length + (4 - b.Length % 4) % 4, '=');
+        var f = Encoding.UTF8.GetString(Convert.FromBase64String(b)).Split('|');
+        if (f.Length != 4 || f[3] != (string)context.Variables[&quot;tenant&quot;]) return &quot;&quot;;
+        return string.Join(&quot;|&quot;, f);
+    }" />
+    <choose>
+      <when condition="@(string.IsNullOrEmpty((string)context.Variables[&quot;ticket&quot;]))">
+        <return-response><set-status code="404" reason="Not Found" /></return-response>
+      </when>
+    </choose>
+    <set-variable name="rBackend" value="@(((string)context.Variables[&quot;ticket&quot;]).Split('|')[0])" />
+    <set-variable name="rModel"   value="@(((string)context.Variables[&quot;ticket&quot;]).Split('|')[1])" />
+    <set-variable name="rResult"  value="@(((string)context.Variables[&quot;ticket&quot;]).Split('|')[2])" />
+
+    <!-- Polling floor: one GET per result every 2 s protects the resource's 50 GET/s budget. -->
+    <rate-limit-by-key calls="1" renewal-period="2"
+                       counter-key="@(&quot;poll:&quot; + (string)context.Variables[&quot;rResult&quot;])"
+                       retry-after-header-name="Retry-After" />
+
+    <rewrite-uri template="@(&quot;/documentModels/&quot; + (string)context.Variables[&quot;rModel&quot;] + &quot;/analyzeResults/&quot; + (string)context.Variables[&quot;rResult&quot;])" copy-unmatched-params="false" />
+    <!-- Pinned to the accepting resource. No pool, no retry, no failover. -->
+    <set-backend-service backend-id="@((string)context.Variables[&quot;rBackend&quot;])" />
+  </inbound>
+  <backend>
+    <forward-request timeout="30" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

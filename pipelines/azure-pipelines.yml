@@ -1,0 +1,102 @@
+# DI gateway: fmt -> validate -> tflint -> checkov -> tests -> plan -> approval -> apply
+#
+# Service connections use Workload Identity Federation (no client secrets).
+# The agent pool must have private network line-of-sight to Key Vault (the
+# bootstrap signing keys are written through its private endpoint).
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [infra/*, apim/*, pipelines/*, tests/*]
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  terraformVersion: "1.16.4"
+  tflintVersion: "v0.64.0"
+  checkovVersion: "3.3.19"
+  tfRoot: infra/terraform
+
+pool:
+  name: daas-private-agents # TODO: DeployEz self-hosted pool with VNet line-of-sight
+
+stages:
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: static
+        displayName: fmt, validate, tflint, checkov, tests
+        steps:
+          - checkout: self
+
+          - script: |
+              set -euo pipefail
+              curl -sSLo tf.zip "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip"
+              unzip -o -q tf.zip -d "$(Agent.ToolsDirectory)/terraform"
+              echo "##vso[task.prependpath]$(Agent.ToolsDirectory)/terraform"
+              curl -sSL "https://raw.githubusercontent.com/terraform-linters/tflint/$(tflintVersion)/install_linux.sh" | TFLINT_VERSION=$(tflintVersion) bash
+              python3 -m pip install --quiet "checkov==$(checkovVersion)" -r tests/policy/requirements.txt
+            displayName: Install tools
+
+          - script: terraform fmt -check -recursive -diff $(tfRoot)
+            displayName: terraform fmt
+
+          - script: |
+              set -euo pipefail
+              for env in nonprod prod; do
+                terraform -chdir=$(tfRoot)/envs/$env init -backend=false -input=false
+                terraform -chdir=$(tfRoot)/envs/$env validate
+              done
+            displayName: terraform validate
+
+          - script: |
+              set -euo pipefail
+              tflint --init --config="$(Build.SourcesDirectory)/.tflint.hcl"
+              for dir in modules/di-gateway modules/platform envs/nonprod envs/prod; do
+                tflint --config="$(Build.SourcesDirectory)/.tflint.hcl" --chdir="$(tfRoot)/$dir"
+              done
+            displayName: tflint
+            env:
+              GITHUB_TOKEN: $(githubToken) # optional, avoids GitHub API rate limits when fetching the ruleset
+
+          - script: >-
+              checkov -d $(tfRoot) --framework terraform --compact --quiet
+              --output cli --output junitxml
+              --output-file-path console,$(Build.ArtifactStagingDirectory)
+            displayName: checkov
+
+          - script: |
+              set -euo pipefail
+              terraform -chdir=$(tfRoot)/modules/di-gateway init -backend=false -input=false
+              terraform -chdir=$(tfRoot)/modules/di-gateway test
+              for env in nonprod prod; do
+                terraform -chdir=$(tfRoot)/envs/$env test
+              done
+            displayName: terraform test (guardrails, mocked providers)
+
+          - script: python3 -m pytest tests/policy --junitxml=$(Build.ArtifactStagingDirectory)/policy-tests.xml
+            displayName: policy tests
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: $(Build.ArtifactStagingDirectory)/*.xml
+
+  - template: templates/terraform-env.yml
+    parameters:
+      environment: nonprod
+      serviceConnection: sc-daas-di-nonprod-wif # TODO: WIF service connection
+      dependsOn: Validate
+      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+  - template: templates/terraform-env.yml
+    parameters:
+      environment: prod
+      serviceConnection: sc-daas-di-prod-wif # TODO: WIF service connection
+      dependsOn: Apply_nonprod
+      applyCondition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+      manualApproval: true
