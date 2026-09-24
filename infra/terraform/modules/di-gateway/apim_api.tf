@@ -66,15 +66,33 @@ resource "azurerm_api_management_api_operation" "result" {
 
 # Policies reference named values ({{...}}) that must exist before APIM accepts
 # the XML, and backend IDs that set-backend-service resolves at runtime.
+locals {
+  # With a user-assigned identity, APIM must be told which identity to request the
+  # DI token as. The policy file keeps the system-assigned form; Terraform adds
+  # client-id (read from a named value) when use_user_assigned_identity is set.
+  msi_tag_system = "<authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />"
+  msi_tag_user   = "<authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{apim-identity-client-id}}\" />"
+  api_policy_raw = file("${local.policy_dir}/api-di-v1.xml")
+  api_policy_xml = var.use_user_assigned_identity ? replace(local.api_policy_raw, local.msi_tag_system, local.msi_tag_user) : local.api_policy_raw
+}
+
 resource "azurerm_api_management_api_policy" "di_v1" {
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
   resource_group_name = local.apim_rg_name
-  xml_content         = file("${local.policy_dir}/api-di-v1.xml")
+  xml_content         = local.api_policy_xml
+
+  lifecycle {
+    precondition {
+      condition     = strcontains(local.api_policy_raw, local.msi_tag_system)
+      error_message = "api-di-v1.xml must contain exactly ${local.msi_tag_system}; the user-assigned identity switch rewrites that tag."
+    }
+  }
 
   depends_on = [
     azurerm_api_management_named_value.tenant_cell_map,
     azurerm_api_management_named_value.plain,
+    azurerm_api_management_named_value.identity_client_id,
   ]
 }
 

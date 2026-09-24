@@ -10,6 +10,9 @@ requests spill to overflow at 90% of pool capacity instead of being rejected.
 
 - DI accounts: `public_network_access_enabled = false`, `local_auth_enabled = false`,
   private endpoints only. APIM reaches DI with its managed identity. No API keys anywhere.
+- APIM's identity is system-assigned by default, or the user-assigned identity in `apim_identity_id` (must
+  already be attached to APIM; read from the APIM lookup). `use_user_assigned_identity` is derived from the
+  tfvars (static). `api-di-v1.xml` keeps the system-assigned tag; Terraform adds `client-id` for user-assigned.
 - No secrets in the repo. Signing keys are Key Vault references. Pipelines use WIF (OIDC).
 - The APIM instance itself is never created or reconfigured by Terraform (it only adds APIs, backends,
   named values, the external cache and a diagnostic setting). It is read in `modules/platform/existing_apim.tf`,

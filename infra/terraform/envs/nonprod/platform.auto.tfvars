@@ -13,9 +13,14 @@ unique_suffix   = "x7n"
 # To move to Premium v2 later, point apim_name at the new instance; nothing else changes.
 allowed_apim_skus = ["StandardV2", "PremiumV2"]
 
-apim_name                = "apim-daas-np"                                                                                                                              # TODO: existing instance
-apim_resource_group_name = "rg-apim-np"                                                                                                                                # TODO
-apim_vnet_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np" # TODO: APIM VNet integration VNet
+apim_name                = "apim-daas-np" # TODO: existing instance
+apim_resource_group_name = "rg-apim-np"   # TODO
+
+# Identity APIM uses for DI and Key Vault. Null = APIM's system-assigned identity.
+# To use a user-assigned identity, attach it to the APIM instance first (this repo
+# never modifies APIM), then set its resource ID. Role assignments go to it.
+# apim_identity_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-apim-di-np"
+apim_vnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np" # TODO: APIM VNet integration VNet
 
 # Private endpoints for DI, Key Vault and Redis. Either reuse a subnet that APIM can reach
 # through its VNet integration (set existing_pe_subnet_id; not the delegated integration

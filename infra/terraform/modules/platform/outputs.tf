@@ -46,9 +46,15 @@ output "apim_gateway_host" {
 # Consumers must not create policies that read these until APIM can resolve them,
 # so the outputs wait for the RBAC grant, the external cache and the secrets.
 output "apim_principal_id" {
-  description = "APIM system-assigned identity object ID."
+  description = "Object ID of the identity APIM uses for DI and Key Vault (user-assigned if apim_identity_id is set, else system-assigned)."
   value       = local.apim_principal_id
   depends_on  = [terraform_data.apim_guardrails, azurerm_role_assignment.apim_kv, azapi_resource.apim_cache]
+}
+
+output "apim_identity_client_id" {
+  description = "Client ID of APIM's user-assigned identity, or null when the system-assigned identity is used."
+  value       = local.apim_identity_client_id
+  depends_on  = [terraform_data.apim_guardrails]
 }
 
 output "signing_secret_id" {

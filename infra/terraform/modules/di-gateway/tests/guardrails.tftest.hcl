@@ -296,3 +296,56 @@ run "threshold_out_of_range_rejected" {
 
   expect_failures = [var.overflow_threshold_pct]
 }
+
+run "system_assigned_identity_by_default" {
+  command = plan
+
+  assert {
+    condition     = strcontains(azurerm_api_management_api_policy.di_v1.xml_content, "<authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />")
+    error_message = "Without a user-assigned identity the policy uses APIM's system-assigned identity."
+  }
+
+  assert {
+    condition     = length(azurerm_api_management_named_value.identity_client_id) == 0 && alltrue([for n in azurerm_api_management_named_value.signing : n.value_from_key_vault[0].identity_client_id == null])
+    error_message = "No client ID named value, and Key Vault references resolved by the system-assigned identity."
+  }
+}
+
+run "user_assigned_identity" {
+  command = plan
+
+  variables {
+    use_user_assigned_identity = true
+    apim_identity_client_id    = "44444444-4444-4444-4444-444444444444"
+  }
+
+  assert {
+    condition     = strcontains(azurerm_api_management_api_policy.di_v1.xml_content, "<authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{apim-identity-client-id}}\" />")
+    error_message = "With a user-assigned identity, APIM requests the DI token with that identity's client ID."
+  }
+
+  assert {
+    condition     = azurerm_api_management_named_value.identity_client_id[0].value == "44444444-4444-4444-4444-444444444444"
+    error_message = "The client ID must be published as the apim-identity-client-id named value."
+  }
+
+  assert {
+    condition     = alltrue([for n in azurerm_api_management_named_value.signing : n.value_from_key_vault[0].identity_client_id == "44444444-4444-4444-4444-444444444444"])
+    error_message = "Key Vault references must be resolved by the user-assigned identity."
+  }
+
+  assert {
+    condition     = alltrue([for r in azurerm_role_assignment.apim_di : r.principal_id == var.apim_principal_id])
+    error_message = "DI role assignments go to the principal passed in (the user-assigned identity's)."
+  }
+}
+
+run "user_assigned_identity_without_client_id_fails" {
+  command = plan
+
+  variables {
+    use_user_assigned_identity = true
+  }
+
+  expect_failures = [azurerm_api_management_named_value.identity_client_id]
+}

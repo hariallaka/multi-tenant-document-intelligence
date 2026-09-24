@@ -414,3 +414,94 @@ run "missing_managed_identity_rejected" {
 
   expect_failures = [terraform_data.apim_guardrails]
 }
+
+run "user_assigned_identity_used_when_set" {
+  command = plan
+
+  variables {
+    apim_identity_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-id/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-apim-di"
+  }
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
+      output = {
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "UserAssigned"
+        principal_id   = null
+        user_identities = {
+          # ARM may return the resource ID with different casing.
+          "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-id/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-apim-di" = {
+            principalId = "55555555-5555-5555-5555-555555555555"
+            clientId    = "66666666-6666-6666-6666-666666666666"
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = output.apim_identity_client_id == "66666666-6666-6666-6666-666666666666"
+    error_message = "The client ID comes from APIM's attached user-assigned identity (matched case-insensitively)."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.apim_kv.principal_id == "55555555-5555-5555-5555-555555555555"
+    error_message = "Key Vault Secrets User goes to the user-assigned identity's principal."
+  }
+}
+
+run "system_assigned_identity_by_default" {
+  command = plan
+
+  assert {
+    condition     = output.apim_identity_client_id == null && azurerm_role_assignment.apim_kv.principal_id == "00000000-0000-0000-0000-000000000002"
+    error_message = "Without apim_identity_id, APIM's system-assigned identity is used."
+  }
+}
+
+run "user_assigned_identity_not_attached_rejected" {
+  command = plan
+
+  variables {
+    apim_identity_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-id/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-apim-di"
+  }
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
+      output = {
+        sku             = "StandardV2"
+        public_access   = "Disabled"
+        vnet_type       = "External"
+        vnet_subnet_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id    = null
+        gateway_url     = "https://apim.azure-api.net"
+        identity_type   = "SystemAssigned"
+        principal_id    = null
+        user_identities = {}
+      }
+    }
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "invalid_identity_id_rejected" {
+  command = plan
+
+  variables {
+    apim_identity_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/x"
+  }
+
+  expect_failures = [var.apim_identity_id]
+}

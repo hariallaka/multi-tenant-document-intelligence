@@ -36,7 +36,7 @@ deployment profile this repo implements, which narrows the design to two pools (
 | Pools | **general**: 2 DI resources. **critical**: 3 DI resources. They share nothing |
 | Overflow | **Active at 90%.** One overflow pool per zone (`pool-overflow-general`, `pool-overflow-critical`, 1 DI each). When a pool reaches 90% of its capacity, further requests go to its zone's overflow pool instead of being rejected |
 | DI exposure | Private endpoints only, `public_network_access_enabled = false`, `local_auth_enabled = false` |
-| Authentication | APIM authenticates to DI and Key Vault with its managed identity: no DI keys and no secrets in the repo. **One exception:** APIM authenticates to Redis with an access key that's never stored in Terraform state; see [Redis authentication](#redis-authentication-option-a) |
+| Authentication | APIM authenticates to DI and Key Vault with its managed identity (system-assigned by default, or a user-assigned one via `apim_identity_id`): no DI keys and no secrets in the repo. **One exception:** APIM authenticates to Redis with an access key that's never stored in Terraform state; see [Redis authentication](#redis-authentication-option-a) |
 | Overflow counters | **Azure Cache for Redis** (Azure Managed Redis can't be used here), private endpoint only, same region as APIM and DI. **Entra ID authentication enabled** for every client; APIM alone uses an access key (option A) |
 
 ### Overflow at 90% capacity
@@ -174,8 +174,12 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 - **Outbound VNet integration:** the instance is integrated with a subnet of `apim_vnet_id`
   delegated to `Microsoft.Web/serverFarms`. This is how APIM reaches the DI, Key Vault and Redis
   private endpoints. (On Premium v2, VNet injection in Internal mode also works.)
-- **Identity:** a system-assigned managed identity. Terraform grants it `Cognitive Services User`
-  on each DI account and `Key Vault Secrets User` on the vault.
+- **Identity:** a managed identity on the APIM instance, used for DI and Key Vault. Terraform
+  grants it `Cognitive Services User` on each DI account and `Key Vault Secrets User` on the vault.
+  Either:
+  - **System-assigned** (default): leave `apim_identity_id` unset.
+  - **User-assigned:** attach the identity to the APIM instance first (this repo never modifies
+    APIM), then set `apim_identity_id` to its resource ID. See [APIM identity](#apim-identity).
 - **Network:** `apim_vnet_id` is the VNet APIM integrates with. APIM must reach the PE subnet,
   either because the subnet is in that VNet (not the delegated integration subnet itself) or
   through the peering Terraform creates. NSGs and route tables on the integration subnet must
@@ -187,6 +191,28 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
   Contributor on the APIM instance, and User Access Administrator (or RBAC Administrator)
   for the role assignments. Network Contributor on the APIM VNet is needed only for
   `create_reverse_peering`.
+
+### APIM identity
+
+APIM uses one managed identity for DI (the `authentication-managed-identity` policy) and for the
+signing-key named values in Key Vault. `apim_identity_id` in `platform.auto.tfvars` picks which:
+
+| | System-assigned (default) | User-assigned (`apim_identity_id` set) |
+| --- | --- | --- |
+| Where it comes from | Created with the APIM instance | Created by you and attached to the APIM instance before deploying |
+| DI token request | `<authentication-managed-identity resource="https://cognitiveservices.azure.com" />` | Terraform adds `client-id="{{apim-identity-client-id}}"`, and the named value holds the identity's client ID |
+| Key Vault named values | Resolved by the system-assigned identity | `identity_client_id` set to the user-assigned identity |
+| Role assignments (DI, Key Vault) | Granted to APIM's system principal | Granted to the user-assigned identity's principal |
+| Plan fails if | APIM has no system-assigned identity | That identity isn't attached to APIM |
+
+Terraform reads the user-assigned identity's principal and client IDs from the APIM instance
+itself, so it needs no extra permissions on the identity. A user-assigned identity keeps its role
+assignments if APIM is recreated, and permissions can be granted before APIM exists. Don't share it
+with other services: anything holding it can call DI and read the signing keys.
+
+Switching an existing environment between the two moves the role assignments and updates the
+policy and named values in one apply. Expect a few minutes of failed DI calls while the new role
+assignments propagate, so switch outside peak hours.
 
 ## Repository layout
 
@@ -230,7 +256,8 @@ placeholders marked `TODO`.
 
 - **Existing APIM:** it is Standard v2 or Premium v2 (per `allowed_apim_skus`); private (public
   access disabled, or Internal injection on Premium v2) with no public IP; VNet-integrated into
-  `apim_vnet_id`; and has a system-assigned identity.
+  `apim_vnet_id`; and has a system-assigned identity, or the user-assigned identity named by
+  `apim_identity_id` attached.
 - Every tenant references an existing pool.
 - Overflow-enabled tenants have an overflow pool in their zone, and none are Restricted.
 - DI accounts per region, including `dedicated_di_count`, stay at or below 20.

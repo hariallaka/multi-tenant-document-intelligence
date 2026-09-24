@@ -4,6 +4,9 @@
 # that the azurerm data source does not (publicNetworkAccess, virtualNetworkType,
 # the VNet subnet).
 #
+# Identity: APIM's system-assigned identity by default, or the user-assigned identity
+# named by apim_identity_id (it must already be attached to the instance).
+#
 # Private topologies the guardrails accept:
 #   Standard v2: inbound private endpoint + publicNetworkAccess = Disabled, and
 #                outbound VNet integration (virtualNetworkType = External, subnet
@@ -23,6 +26,7 @@ data "azapi_resource" "apim" {
     gateway_url     = "properties.gatewayUrl"
     identity_type   = "identity.type"
     principal_id    = "identity.principalId"
+    user_identities = "identity.userAssignedIdentities"
     private_ip_list = "properties.privateIPAddresses"
   }
 }
@@ -35,9 +39,22 @@ locals {
   apim_vnet_subnet_id = try(data.azapi_resource.apim.output.vnet_subnet_id, null)
   apim_public_ip_id   = try(data.azapi_resource.apim.output.public_ip_id, null)
   apim_identity       = try(data.azapi_resource.apim.output.identity_type, "None")
-  apim_principal_id   = try(data.azapi_resource.apim.output.principal_id, null)
-  apim_location       = lower(replace(try(data.azapi_resource.apim.location, ""), " ", ""))
-  apim_gateway_host   = trimprefix(try(data.azapi_resource.apim.output.gateway_url, "https://${var.apim_name}.azure-api.net"), "https://")
+  apim_system_pid     = try(data.azapi_resource.apim.output.principal_id, null)
+
+  # User-assigned identity (optional). APIM reports attached identities keyed by
+  # resource ID; match case-insensitively, since ARM may change the ID's casing.
+  use_user_assigned = var.apim_identity_id != null
+  apim_user_identity = local.use_user_assigned ? try(one([
+    for id, v in try(data.azapi_resource.apim.output.user_identities, {}) : v
+    if lower(id) == lower(var.apim_identity_id)
+  ]), null) : null
+
+  # The identity APIM uses for DI and Key Vault: the user-assigned one when
+  # apim_identity_id is set, otherwise the system-assigned one.
+  apim_principal_id       = local.use_user_assigned ? try(local.apim_user_identity.principalId, null) : local.apim_system_pid
+  apim_identity_client_id = local.use_user_assigned ? try(local.apim_user_identity.clientId, null) : null
+  apim_location           = lower(replace(try(data.azapi_resource.apim.location, ""), " ", ""))
+  apim_gateway_host       = trimprefix(try(data.azapi_resource.apim.output.gateway_url, "https://${var.apim_name}.azure-api.net"), "https://")
 
   # APIM reaches the DI, Key Vault and Redis private endpoints through this subnet
   # (VNet integration on Standard v2, integration or injection on Premium v2).
@@ -76,8 +93,13 @@ resource "terraform_data" "apim_guardrails" {
     }
 
     precondition {
-      condition     = strcontains(local.apim_identity, "SystemAssigned") && local.apim_principal_id != null
-      error_message = "APIM ${var.apim_name} needs a system-assigned managed identity: it authenticates to DI and reads the signing keys from Key Vault with it."
+      condition     = local.use_user_assigned || (strcontains(local.apim_identity, "SystemAssigned") && local.apim_system_pid != null)
+      error_message = "APIM ${var.apim_name} needs a system-assigned managed identity (or set apim_identity_id to use a user-assigned one): it authenticates to DI and reads the signing keys from Key Vault with it."
+    }
+
+    precondition {
+      condition     = !local.use_user_assigned || (strcontains(local.apim_identity, "UserAssigned") && local.apim_principal_id != null && local.apim_identity_client_id != null)
+      error_message = "The user-assigned identity ${coalesce(var.apim_identity_id, "-")} is not attached to APIM ${var.apim_name} (identity type: ${local.apim_identity}). Attach it to the APIM instance first; this repo never modifies the instance."
     }
   }
 }

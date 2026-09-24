@@ -59,6 +59,17 @@ variable "allowed_apim_skus" {
   }
 }
 
+variable "apim_identity_id" {
+  description = "Resource ID of a user-assigned managed identity attached to APIM. APIM then uses it (not its system-assigned identity) for DI and Key Vault, and the role assignments go to it. Null uses the system-assigned identity."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.apim_identity_id == null || can(regex("(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.ManagedIdentity/userAssignedIdentities/[^/]+$", var.apim_identity_id))
+    error_message = "apim_identity_id must be a user-assigned managed identity resource ID (/subscriptions/.../providers/Microsoft.ManagedIdentity/userAssignedIdentities/<name>)."
+  }
+}
+
 variable "apim_vnet_id" {
   description = "VNet APIM sends outbound traffic through: its VNet integration VNet (Standard v2) or its integration/injection VNet (Premium v2). Private DNS zones are linked to it so APIM resolves the DI private endpoints."
   type        = string

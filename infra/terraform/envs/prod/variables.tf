@@ -40,6 +40,12 @@ variable "allowed_apim_skus" {
   default     = ["StandardV2", "PremiumV2"]
 }
 
+variable "apim_identity_id" {
+  description = "User-assigned managed identity attached to APIM, used for DI and Key Vault. Null uses APIM's system-assigned identity."
+  type        = string
+  default     = null
+}
+
 variable "apim_resource_group_name" {
   description = "Resource group of the existing APIM instance."
   type        = string

@@ -145,6 +145,18 @@ variable "apim_principal_id" {
   type        = string
 }
 
+variable "use_user_assigned_identity" {
+  description = "APIM uses a user-assigned managed identity for DI and Key Vault. Static flag, because the client ID is only known after the APIM lookup."
+  type        = bool
+  default     = false
+}
+
+variable "apim_identity_client_id" {
+  description = "Client ID of APIM's user-assigned identity. Required when use_user_assigned_identity is true."
+  type        = string
+  default     = null
+}
+
 variable "signing_secret_id" {
   description = "Versionless Key Vault secret ID for result-signing-key (base64)."
   type        = string

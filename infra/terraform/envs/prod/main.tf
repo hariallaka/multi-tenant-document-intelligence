@@ -40,6 +40,7 @@ module "platform" {
   # Existing APIM Standard v2 / Premium v2 instance (not managed here).
   apim_name                = var.apim_name
   allowed_apim_skus        = var.allowed_apim_skus
+  apim_identity_id         = var.apim_identity_id
   apim_resource_group_name = var.apim_resource_group_name
   apim_vnet_id             = var.apim_vnet_id
   require_private_apim     = var.require_private_apim
@@ -77,8 +78,11 @@ module "di_gateway" {
   apim_name                = module.platform.apim_name
   apim_resource_group_name = module.platform.apim_resource_group_name
   apim_principal_id        = module.platform.apim_principal_id
-  signing_secret_id        = module.platform.signing_secret_id
-  signing_secret_prev_id   = module.platform.signing_secret_prev_id
+  apim_identity_client_id  = module.platform.apim_identity_client_id
+  # Static (from tfvars), so count/for_each never depend on the APIM lookup.
+  use_user_assigned_identity = var.apim_identity_id != null
+  signing_secret_id          = module.platform.signing_secret_id
+  signing_secret_prev_id     = module.platform.signing_secret_prev_id
 
   entra_tenant_id   = var.entra_tenant_id
   gateway_audience  = var.gateway_audience

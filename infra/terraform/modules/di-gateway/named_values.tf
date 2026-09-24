@@ -42,7 +42,25 @@ resource "azurerm_api_management_named_value" "plain" {
   value               = each.value
 }
 
-# Signing keys are Key Vault references resolved by the APIM managed identity.
+# Client ID of APIM's user-assigned identity, used by authentication-managed-identity.
+resource "azurerm_api_management_named_value" "identity_client_id" {
+  count               = var.use_user_assigned_identity ? 1 : 0
+  name                = "apim-identity-client-id"
+  api_management_name = var.apim_name
+  resource_group_name = local.apim_rg_name
+  display_name        = "apim-identity-client-id"
+  value               = var.apim_identity_client_id
+
+  lifecycle {
+    precondition {
+      condition     = var.apim_identity_client_id != null
+      error_message = "use_user_assigned_identity requires apim_identity_client_id."
+    }
+  }
+}
+
+# Signing keys are Key Vault references resolved by APIM's managed identity
+# (system-assigned, or the user-assigned one when use_user_assigned_identity is set).
 # Versionless IDs let APIM pick up rotations (scripts/rotate-signing-key.sh).
 resource "azurerm_api_management_named_value" "signing" {
   for_each = {
@@ -57,5 +75,7 @@ resource "azurerm_api_management_named_value" "signing" {
 
   value_from_key_vault {
     secret_id = each.value
+    # Null: APIM's system-assigned identity reads the secret.
+    identity_client_id = var.use_user_assigned_identity ? var.apim_identity_client_id : null
   }
 }
