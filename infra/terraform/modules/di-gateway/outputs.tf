@@ -34,3 +34,14 @@ output "regional_di_count" {
   description = "DI accounts counted against the regional limit (gateway + dedicated)."
   value       = local.regional_di_count
 }
+
+output "pool_capacity" {
+  description = "Pool => Analyze TPS capacity, and the per-second count at which traffic spills to overflow."
+  value = {
+    for k, v in local.pool_capacity : k => {
+      tps             = v.tps
+      spill_at_per_s  = floor(v.tps * var.overflow_threshold_pct / 100)
+      overflow_target = startswith(k, "overflow-") ? null : (contains(keys(var.di_overflow), try(var.di_cells[k].zone, "")) ? "pool-overflow-${var.di_cells[k].zone}" : null)
+    }
+  }
+}

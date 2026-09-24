@@ -57,6 +57,11 @@ resource "terraform_data" "guardrails" {
     }
 
     precondition {
+      condition     = length(base64encode(jsonencode(local.pool_capacity))) <= 4096
+      error_message = "pool-capacity-map exceeds the 4,096-character named-value limit."
+    }
+
+    precondition {
       condition     = length(base64encode(jsonencode(local.di_host_map))) <= 4096
       error_message = "di-host-map exceeds the 4,096-character named-value limit."
     }

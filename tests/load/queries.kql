@@ -8,6 +8,14 @@ ApiManagementGatewayLogs
 | extend landedElsewhere = tostring(attempts[0]) != tostring(attempts[1])
 | summarize requests = count(), landedElsewhere = countif(landedElsewhere)
 
+// spill-rate (test 4): share of analyze calls each pool served, per tenant and 10 s window.
+// x-daas-pool is set by op-analyze.xml to the pool that served the request.
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h) and OperationId == "analyze"
+| extend tenant = tostring(parse_json(ResponseHeaders)["x-daas-tenant"]), pool = tostring(parse_json(ResponseHeaders)["x-daas-pool"])
+| summarize calls = count() by tenant, pool, bin(TimeGenerated, 10s)
+| order by TimeGenerated asc
+
 // pool-isolation (test 4): which DI member served each tenant's analyze calls.
 ApiManagementGatewayLogs
 | where TimeGenerated > ago(1h) and OperationId == "analyze"

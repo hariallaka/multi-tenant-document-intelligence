@@ -241,3 +241,58 @@ run "critical_overflow_without_pool_fails" {
 
   expect_failures = [terraform_data.guardrails]
 }
+
+run "capacity_map_and_thresholds_rendered" {
+  command = plan
+
+  variables {
+    di_cells = {
+      "t-general"  = { zone = "general", members = { "di-t-gen-1" = {}, "di-t-gen-2" = { weight = 3, tps = 45 } } }
+      "t-critical" = { zone = "critical", members = { "di-t-crit-1" = {}, "di-t-crit-2" = {}, "di-t-crit-3" = {} } }
+    }
+    di_overflow = {
+      general  = { "di-t-ovf-gen-1" = {} }
+      critical = { "di-t-ovf-crit-1" = {}, "di-t-ovf-crit-2" = {} }
+    }
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000001" = { cell = "t-general", tier = "standard", overflow = true, modelPrefix = "t001-" }
+      "3f1c0d8e-0000-0000-0000-000000000101" = { cell = "t-critical", tier = "gold", overflow = true, modelPrefix = "t101-" }
+    }
+    overflow_threshold_pct = 90
+  }
+
+  assert {
+    condition = jsondecode(base64decode(azurerm_api_management_named_value.pool_capacity_map.value)) == {
+      "t-general"         = { tps = 60 }
+      "t-critical"        = { tps = 45 }
+      "overflow-general"  = { tps = 15 }
+      "overflow-critical" = { tps = 30 }
+    }
+    error_message = "pool-capacity-map must hold summed member TPS per pool, keyed by cell and overflow-<zone>."
+  }
+
+  assert {
+    condition     = azurerm_api_management_named_value.plain["overflow-threshold-pct"].value == "90" && azurerm_api_management_named_value.plain["overflow-tenant-share-pct"].value == "50"
+    error_message = "Threshold named values must be rendered."
+  }
+
+  assert {
+    condition     = output.pool_capacity["t-general"].spill_at_per_s == 54 && output.pool_capacity["t-critical"].overflow_target == "pool-overflow-critical"
+    error_message = "Spill point is 90% of pool TPS; the target is the zone's overflow pool."
+  }
+
+  assert {
+    condition     = azapi_resource.overflow_pool["critical"].name == "pool-overflow-critical" && length(azapi_resource.overflow_pool["critical"].body.properties.pool.services) == 2
+    error_message = "The critical overflow pool must hold its own two members."
+  }
+}
+
+run "threshold_out_of_range_rejected" {
+  command = plan
+
+  variables {
+    overflow_threshold_pct = 120
+  }
+
+  expect_failures = [var.overflow_threshold_pct]
+}

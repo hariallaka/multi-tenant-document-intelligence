@@ -21,6 +21,8 @@ export const result429 = new Rate('result_429');
 export const result404 = new Counter('result_404');
 export const analyzeLatency = new Trend('analyze_latency', true);
 export const jobDuration = new Trend('job_duration', true);
+// Pool that served each analyze call (x-daas-pool, set by op-analyze.xml): home or overflow.
+export const servedBy = new Counter('served_by_pool');
 
 function headers(tenant) {
   return { Authorization: `Bearer ${TOKENS[tenant]}`, 'Content-Type': 'application/json' };
@@ -35,6 +37,8 @@ export function submit(tenant, docUrl = DOC_URL, model = MODEL, query = '') {
     { headers: headers(tenant), tags: { tenant, op: 'analyze' } },
   );
   analyze429.add(res.status === 429, { tenant });
+  const pool = res.headers['X-Daas-Pool'] || 'none';
+  servedBy.add(1, { tenant, pool, zone: __ENV.ZONE || 'unknown' });
   analyzeLatency.add(res.timings.duration, { tenant });
   check(res, { 'analyze 202 or 429': (r) => r.status === 202 || r.status === 429 });
   if (res.status === 429) {

@@ -18,7 +18,7 @@ resource "azurerm_api_management_api_operation" "analyze" {
   display_name        = "Analyze document"
   method              = "POST"
   url_template        = "/documentModels/{modelId}/analyze"
-  description         = "Routes to the tenant's cell pool; zone overflow on exhaustion. Returns 202 with a signed result URL."
+  description         = "Routes to the tenant's pool; above the overflow threshold, to the zone overflow pool. Returns 202 with a signed result URL."
 
   template_parameter {
     name     = "modelId"
@@ -88,6 +88,8 @@ resource "azurerm_api_management_api_operation_policy" "analyze" {
   depends_on = [
     azurerm_api_management_api_policy.di_v1,
     azurerm_api_management_named_value.di_host_map,
+    azurerm_api_management_named_value.pool_capacity_map,
+    azurerm_api_management_named_value.plain,
     azurerm_api_management_named_value.signing,
     azapi_resource.cell_pool,
     azapi_resource.overflow_pool,
@@ -122,7 +124,7 @@ resource "azurerm_api_management_api_diagnostic" "di_v1" {
   verbosity                = "information"
 
   frontend_response {
-    headers_to_log = ["x-daas-tenant", "Retry-After"]
+    headers_to_log = ["x-daas-tenant", "x-daas-pool", "Retry-After"]
   }
 
   backend_response {

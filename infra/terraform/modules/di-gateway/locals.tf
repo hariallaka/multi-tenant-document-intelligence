@@ -42,6 +42,13 @@ locals {
 
   di_host_map = { for name, host in local.di_host : host => name }
 
+  # Pool Analyze capacity (sum of member TPS). The Analyze policy spills to the
+  # zone overflow pool at overflow_threshold_pct of this. Keys: cell name, or overflow-<zone>.
+  pool_capacity = merge(
+    { for cell, c in var.di_cells : cell => { tps = sum([for m in c.members : m.tps]) } },
+    { for zone, m in var.di_overflow : "overflow-${zone}" => { tps = sum([for x in m : x.tps]) } },
+  )
+
   pool_sizes = merge(
     { for cell, c in var.di_cells : "pool-${cell}" => length(c.members) },
     { for zone, m in var.di_overflow : "pool-overflow-${zone}" => length(m) },

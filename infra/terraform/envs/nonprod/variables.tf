@@ -129,14 +129,26 @@ variable "di_cells" {
   description = "Home cells (DeployEz config)."
   type = map(object({
     zone    = string
-    members = map(object({ weight = number }))
+    members = map(object({ weight = optional(number, 1), tps = optional(number, 15) }))
   }))
 }
 
 variable "di_overflow" {
   description = "Overflow pools by zone (DeployEz config)."
-  type        = map(map(object({ weight = number })))
+  type        = map(map(object({ weight = optional(number, 1), tps = optional(number, 15) })))
   default     = {}
+}
+
+variable "overflow_threshold_pct" {
+  description = "Pool utilisation (%) at which requests spill to the zone overflow pool."
+  type        = number
+  default     = 90
+}
+
+variable "overflow_tenant_share_pct" {
+  description = "Most of an overflow pool's capacity (%) one tenant may use."
+  type        = number
+  default     = 50
 }
 
 variable "di_tenants" {

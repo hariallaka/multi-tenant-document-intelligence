@@ -29,7 +29,7 @@ def test_every_referenced_named_value_is_created_by_terraform():
         referenced |= set(re.findall(r"\{\{([a-z0-9-]+)\}\}", read(name)))
     tf = NAMED_VALUES_TF.read_text()
     created = set(re.findall(r'name\s*=\s*"([a-z0-9-]+)"', tf))
-    created |= set(re.findall(r'^\s*"([a-z0-9-]+)"\s*=\s*var\.', tf, re.M))
+    created |= set(re.findall(r'^\s*"([a-z0-9-]+)"\s*=\s*(?:tostring\()?var\.', tf, re.M))
     missing = referenced - created
     assert not missing, f"Policies reference named values Terraform does not create: {sorted(missing)}"
 
@@ -61,9 +61,36 @@ def test_result_operation_is_pinned_and_not_retried():
     assert 'set-backend-service backend-id="@((string)context.Variables[&quot;rBackend&quot;])"' in result
 
 
+def test_capacity_routing_matches_python_port():
+    analyze = read("op-analyze.xml")
+    # Limits: floor(tps * pct / 100), tenant share at least 1.
+    assert analyze.count("(int)Math.Floor((double)c[&quot;tps&quot;] * {{overflow-threshold-pct}} / 100.0)") == 2
+    assert "Math.Max(1, (int)Math.Floor((double)c[&quot;tps&quot;] * {{overflow-tenant-share-pct}} / 100.0))" in analyze
+    # Spill only for overflow-enabled tenants with a zone overflow pool, at or above the home limit.
+    assert ("(bool)context.Variables[&quot;overflow&quot;] &amp;&amp; (int)context.Variables[&quot;ovfLimit&quot;] &gt; 0 &amp;&amp; "
+            "Convert.ToInt32(context.Variables[&quot;homeCount&quot;]) &gt;= (int)context.Variables[&quot;homeLimit&quot;]") in analyze
+    # ...and only while the overflow pool and the tenant's share of it are below their limits.
+    assert ("Convert.ToInt32(context.Variables[&quot;ovfCount&quot;]) &lt; (int)context.Variables[&quot;ovfLimit&quot;] &amp;&amp; "
+            "Convert.ToInt32(context.Variables[&quot;tenantOvfCount&quot;]) &lt; (int)context.Variables[&quot;tenantOvfLimit&quot;]") in analyze
+    # Never rejects on pool capacity: no return-response between routing and set-backend-service.
+    routing = analyze[analyze.index("Capacity-based routing"):analyze.index("</inbound>")]
+    assert "return-response" not in routing
+    # Counters live in the shared external cache.
+    assert routing.count('caching-type="external"') == 6
+
+
+def test_capacity_map_keys_match_terraform():
+    locals_tf = (ROOT / "infra" / "terraform" / "modules" / "di-gateway" / "locals.tf").read_text()
+    assert '{ for cell, c in var.di_cells : cell => { tps = sum([for m in c.members : m.tps]) } }' in locals_tf
+    assert '{ for zone, m in var.di_overflow : "overflow-${zone}" => { tps = sum([for x in m : x.tps]) } }' in locals_tf
+    analyze = read("op-analyze.xml")
+    assert "[&quot;overflow-&quot; + (string)context.Variables[&quot;zone&quot;]]" in analyze
+
+
 def test_overflow_pool_names_match_terraform():
     analyze = read("op-analyze.xml")
-    assert "&quot;pool-overflow-&quot; + (string)JObject.Parse((string)context.Variables[&quot;tenantCfg&quot;])[&quot;zone&quot;]" in analyze
+    assert '<set-variable name="ovfPool" value="@(&quot;pool-overflow-&quot; + (string)context.Variables[&quot;zone&quot;])" />' in analyze
+    assert '<set-variable name="homePool" value="@(&quot;pool-&quot; + (string)context.Variables[&quot;cell&quot;])" />' in analyze
     pools_tf = (ROOT / "infra" / "terraform" / "modules" / "di-gateway" / "apim_pools.tf").read_text()
     assert 'name      = "pool-overflow-${each.key}"' in pools_tf
     assert 'name      = "pool-${each.key}"' in pools_tf

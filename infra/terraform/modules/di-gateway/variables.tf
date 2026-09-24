@@ -5,8 +5,10 @@
 variable "di_cells" {
   description = "Home cells. Each cell is one APIM pool of DI resources in one workload zone (general, critical, confidential, restricted). Member keys are stable backend keys (e.g. di-prod-gen-1)."
   type = map(object({
-    zone    = string
-    members = map(object({ weight = number }))
+    zone = string
+    # tps: the member's approved Analyze TPS (S0 default 15; raise after a support ticket).
+    # weight: its share of the pool's round-robin; keep it proportional to tps.
+    members = map(object({ weight = optional(number, 1), tps = optional(number, 15) }))
   }))
 
   validation {
@@ -23,16 +25,26 @@ variable "di_cells" {
     condition     = alltrue([for c in var.di_cells : length(c.members) >= 1])
     error_message = "Every cell needs at least one member."
   }
+
+  validation {
+    condition     = alltrue(flatten([for c in var.di_cells : [for m in c.members : m.tps >= 1 && m.tps <= 1000]]))
+    error_message = "Member tps must be between 1 and 1000."
+  }
 }
 
 variable "di_overflow" {
   description = "Optional overflow pools, keyed by zone. Each zone's pool is its own (never shared); Restricted never gets one."
-  type        = map(map(object({ weight = number })))
+  type        = map(map(object({ weight = optional(number, 1), tps = optional(number, 15) })))
   default     = {}
 
   validation {
     condition     = alltrue([for z in keys(var.di_overflow) : contains(local.zones, z) && z != "restricted"])
     error_message = "Overflow pools may only be defined for the general, critical and confidential zones."
+  }
+
+  validation {
+    condition     = alltrue(flatten([for z in var.di_overflow : [for m in z : m.tps >= 1 && m.tps <= 1000]]))
+    error_message = "Member tps must be between 1 and 1000."
   }
 
   validation {
@@ -63,6 +75,28 @@ variable "di_tenants" {
   validation {
     condition     = alltrue([for t in var.di_tenants : !startswith(t.modelPrefix, "prebuilt-")])
     error_message = "modelPrefix must not start with prebuilt-."
+  }
+}
+
+variable "overflow_threshold_pct" {
+  description = "Pool utilisation (percent of summed member Analyze TPS, per second) at which requests from overflow-enabled tenants are routed to their zone's overflow pool instead of being rejected. The overflow pool stops taking spill at the same percentage of its own capacity."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.overflow_threshold_pct >= 50 && var.overflow_threshold_pct <= 100 && floor(var.overflow_threshold_pct) == var.overflow_threshold_pct
+    error_message = "overflow_threshold_pct must be a whole number between 50 and 100."
+  }
+}
+
+variable "overflow_tenant_share_pct" {
+  description = "Most of an overflow pool's capacity (percent, per second) that one tenant may use, so one hot tenant cannot take all of it."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.overflow_tenant_share_pct >= 1 && var.overflow_tenant_share_pct <= 100 && floor(var.overflow_tenant_share_pct) == var.overflow_tenant_share_pct
+    error_message = "overflow_tenant_share_pct must be a whole number between 1 and 100."
   }
 }
 

@@ -10,59 +10,90 @@ deployment profile this repo implements, which narrows the design to two pools (
 ## Architecture
 
 ```
-                    private network only (no public IP, no public endpoint)
-┌──────────────┐    ┌──────────────────────────────────────────┐    ┌───────────────────────────────┐
-│ internal app │──▶│ APIM Premium v2 (existing, VNet-injected) │    │ pool-prod-general  (2 × DI S0) │
-│ Entra token  │    │  api-di-v1.xml   auth, tenant → pool      │──▶│   di-prod-gen-1, -2          │
-└──────────────┘    │  op-analyze.xml  limits, retry in pool    │    ├───────────────────────────────┤
-                    │  op-result.xml   signed ticket → 1 member │──▶│ pool-prod-critical (3 × DI S0) │
-                    │  managed identity ─▶ DI (no keys)        │    │   di-prod-crit-1, -2, -3      │
-                    └──────────────────────────────────────────┘    └───────────────────────────────┘
-                              │  named values ─▶ Key Vault (PE)      each DI: public access off,
-                              │  external cache ─▶ Managed Redis (PE)  local auth off, private endpoint
-                              └─ logs ─▶ Log Analytics
+                 private network only (no public IP, no public endpoint)
+┌──────────────┐   ┌───────────────────────────────────────────┐   ┌────────────────────────────────────┐
+│ internal app │──▶│ APIM Premium v2 (existing, VNet-injected)  │──▶│ pool-prod-general    2 × DI S0      │
+│ Entra token  │   │  api-di-v1.xml  auth, tenant → pool       │   │ pool-prod-critical   3 × DI S0      │
+└──────────────┘   │  op-analyze.xml limits, count pool load:  │   ├──── at ≥ 90% of pool capacity ─────┤
+                   │    < 90%  → home pool                     │──▶│ pool-overflow-general   1 × DI S0   │
+                   │    ≥ 90%  → zone overflow pool            │   │ pool-overflow-critical  1 × DI S0   │
+                   │  op-result.xml  signed ticket → 1 member  │   └────────────────────────────────────┘
+                   │  managed identity ─▶ DI (no keys)        │     each DI: public access off,
+                   └───────────────────────────────────────────┘     local auth off, private endpoint
+                        │ named values ─▶ Key Vault (PE)
+                        │ external cache ─▶ Managed Redis (PE): per-pool, per-second counters
+                        └ logs ─▶ Log Analytics
 ```
 
 ## Deployment profile
 
 | Decision | This repo |
 | --- | --- |
-| APIM | **Existing Premium v2 instance**, read by Terraform and never created or modified (only APIs, backends, named values, the external cache and a diagnostic setting are added to it) |
+| APIM | **Existing Premium v2 instance**, read by Terraform and never created or reconfigured (only APIs, backends, named values, the external cache and a diagnostic setting are added to it) |
 | APIM exposure | **Private only.** The plan fails unless the instance is VNet-injected in Internal mode or has public network access disabled, and has no public IP (`require_private_apim`) |
 | Pools | **general**: 2 DI resources. **critical**: 3 DI resources. They share nothing |
-| Overflow | None configured. Each pool absorbs its own bursts. The module still supports zone-specific overflow pools if you add them later |
+| Overflow | **Active at 90%.** One overflow pool per zone (`pool-overflow-general`, `pool-overflow-critical`, 1 DI each). When a pool reaches 90% of its capacity, further requests go to its zone's overflow pool instead of being rejected |
 | DI exposure | Private endpoints only, `public_network_access_enabled = false`, `local_auth_enabled = false` |
 
-### How the pools prevent throttling
+### Overflow at 90% capacity
 
-S0 defaults per DI resource: **15 Analyze (POST)/s** and **50 Get-result/s**. The gateway admits
-at most 80% of a pool's capacity, so short bursts and approximate balancing don't cause 429s.
+S0 defaults per DI resource: **15 Analyze (POST)/s** and **50 Get-result/s**. A pool's capacity
+is the sum of its members' `tps`.
 
-| Pool | Members | Analyze capacity | Admitted (80%) | GET capacity | GET kept under | One member down |
-| --- | --- | --- | --- | --- | --- | --- |
-| general | 2 | 30 TPS | 24 TPS | 100/s | 80/s | 15 TPS on 1 member |
-| critical | 3 | 45 TPS | 36 TPS | 150/s | 120/s | 30 TPS on 2 members (still above most critical demand) |
+| Pool | DI | Analyze capacity | Spills to overflow at (90%) | Overflow target |
+| --- | --- | --- | --- | --- |
+| `pool-prod-general` | 2 | 30/s | 27 calls in a second | `pool-overflow-general` |
+| `pool-prod-critical` | 3 | 45/s | 40 calls in a second | `pool-overflow-critical` |
+| `pool-overflow-general` | 1 | 15/s | takes spill up to 13/s | none |
+| `pool-overflow-critical` | 1 | 15/s | takes spill up to 13/s | none |
 
-The controls are layered:
+How it works (`apim/policies/op-analyze.xml`):
 
-1. **Per-tenant admission.** `rate-limit-by-key` on the caller's Entra client ID (standard:
-   10 calls/5 s, gold: 30 calls/5 s) and a daily `quota-by-key`. A tenant over its limit gets
-   429 at the gateway before any DI resource sees the load.
-2. **Pool isolation.** General and critical workloads call different DI resources, so a general
-   surge cannot throttle critical work.
+1. For every Analyze call, APIM reads the home pool's counter for the current second from the
+   external Redis cache. The cache is shared, so every gateway unit sees the same count.
+2. **Below 90%:** the home pool serves the request, and the counter goes up by one.
+3. **At or above 90%:** if the tenant has `overflow = true`, the request goes to the zone's
+   overflow pool instead. The gateway does not reject it.
+4. **The overflow pool has its own limits.** It takes spill only up to 90% of its own capacity,
+   and one tenant may use at most 50% of it per second (`overflow_tenant_share_pct`), so one hot
+   tenant can't take all of it.
+5. **When both are busy:** the request goes to the home pool anyway. The gateway never rejects on
+   pool capacity; DI's own limits apply, and the circuit breakers and retries below handle any 429.
+6. **Retries:** attempts 1 and 2 go to the chosen pool (skipping tripped members), and attempt 3
+   goes to the other pool (home ↔ overflow).
+7. **Logging:** every Analyze response carries `x-daas-pool` with the pool that served it. It is
+   logged in APIM diagnostics, so you can see how often each tenant spills.
+
+Settings in `di.auto.tfvars`:
+
+- `overflow_threshold_pct` (90) sets where spill starts.
+- `overflow_tenant_share_pct` (50) caps each tenant's share of an overflow pool.
+- `tps` and `weight` per member: raise both after a TPS increase (e.g. `tps = 45, weight = 3`).
+- `overflow = true/false` per tenant.
+
+The counters are approximate. Increments aren't atomic, so under heavy concurrency a pool can
+briefly go a little over 90% before the spill starts. The 10% headroom and the circuit breakers
+absorb this.
+
+### Other controls that still apply
+
+1. **Per-tenant contract limits.** `rate-limit-by-key` on the caller's Entra client ID (standard:
+   10 calls/5 s, gold: 30 calls/5 s) and a daily `quota-by-key`. These cap one tenant's
+   contracted volume and are the **only** place the gateway returns 429 on its own. Pool capacity
+   never causes a gateway 429. Raise a tenant's tier (or the tier limits) if it needs more.
+2. **Pool isolation.** General and critical workloads use different DI resources and different
+   overflow pools, so a general surge cannot throttle critical work.
 3. **Weighted spread.** Each pool round-robins across its members by weight from the first request.
-   Raise a member's `weight` when Microsoft approves a TPS increase for it.
-4. **Circuit breaker and retry within the pool.** A member that returns 429 or 5xx trips for 10 s,
-   or for DI's `Retry-After`. APIM retries the request up to twice in the same pool, skipping
-   tripped members. With 3 members, the critical pool can absorb a throttled member and a retry.
+4. **Circuit breaker and retry.** A member that returns 429 or 5xx trips for 10 s, or for DI's
+   `Retry-After`, and the retry lands on another member or pool.
 5. **2 s polling floor.** Result GETs are limited to one per result every 2 s. GETs are often the
    binding limit: `GET/s = POST/s × processing seconds ÷ 2` must stay under 80% of 50 per resource.
-6. **Result pinning.** A result GET goes to the one DI resource that accepted the job, via a
-   signed, tenant-bound ticket. Pool round-robin is never used for GETs, because a different
-   member would return 404.
+6. **Result pinning.** A result GET goes to the one DI resource that accepted the job, whether it
+   was a home or an overflow member, via a signed, tenant-bound ticket. GETs never go through a
+   pool, because a different member would return 404.
 
-If a pool still runs hot, raise member TPS through a support ticket (then raise its `weight`),
-add a member (up to the 20-per-region limit), or add an overflow pool for that zone.
+If overflow is used regularly (see `x-daas-pool` in the logs), the pool needs more capacity:
+raise member TPS through a support ticket, add a member, or add an overflow member.
 
 ## What Terraform deploys
 
@@ -73,13 +104,13 @@ add a member (up to the 20-per-region limit), or add an overflow pool for that z
 | PE subnet: an existing one, or a spoke VNet + PE subnet + NSG peered with the APIM VNet | `modules/platform/network.tf` | `existing_pe_subnet_id` switches between the two |
 | Private DNS zones for cognitiveservices, vaultcore and redis, linked to the APIM VNet | `modules/platform/dns.tf` | Or pass hub-owned zone IDs |
 | Key Vault (RBAC, private endpoint) and bootstrap signing keys | `modules/platform/keyvault.tf` | Keys are ephemeral and write-only, never stored in state |
-| Azure Managed Redis registered as the APIM external cache | `modules/platform/redis.tf` | Used by the overflow counters in the Analyze policy |
+| Azure Managed Redis registered as the APIM external cache | `modules/platform/redis.tf` | **Required:** holds the per-pool, per-second counters that trigger overflow |
 | Log Analytics, and diagnostic settings for APIM and Key Vault | `modules/platform/monitoring.tf` | |
-| 5 DI accounts: no public access, no local auth, private endpoint, `Cognitive Services User` for APIM | `modules/di-gateway/di_accounts.tf` | |
+| 7 DI accounts (2 general, 3 critical, 1 general overflow, 1 critical overflow): no public access, no local auth, private endpoint, `Cognitive Services User` for APIM | `modules/di-gateway/di_accounts.tf` | |
 | APIM backends with circuit breakers | `modules/di-gateway/apim_backends.tf` | `azapi`, `backends@2024-05-01` |
-| `pool-<env>-general` and `pool-<env>-critical` | `modules/di-gateway/apim_pools.tf` | |
+| `pool-<env>-general`, `pool-<env>-critical`, `pool-overflow-general`, `pool-overflow-critical` | `modules/di-gateway/apim_pools.tf` | |
 | API `di-v1`, two operations and three policies | `modules/di-gateway/apim_api.tf` | XML from `apim/policies` |
-| Named values: tenant map, host map, signing keys (Key Vault refs), identities | `modules/di-gateway/named_values.tf` | |
+| Named values: tenant map, host map, pool capacity map, overflow thresholds, signing keys (Key Vault refs), identities | `modules/di-gateway/named_values.tf` | |
 | Guardrails | `modules/di-gateway/checks.tf` | Plan fails on a violation |
 
 ### Prerequisites on the existing APIM instance
@@ -122,19 +153,19 @@ Each environment has two config files:
 
 - `platform.auto.tfvars`: subscription, region, the existing APIM instance (name, resource
   group, VNet), the PE subnet or spoke address space, and identities.
-- `di.auto.tfvars`: the two pools (`di_cells`), `di_overflow` (empty) and `di_tenants`.
+- `di.auto.tfvars`: the two pools (`di_cells`), the overflow pools (`di_overflow`), the thresholds and `di_tenants`.
   Onboarding a workload changes only this file; see [`scripts/onboard-tenant.md`](scripts/onboard-tenant.md).
 
 A tenant is an Entra client ID assigned to a pool:
 
 ```hcl
 di_tenants = {
-  "<client id>" = { cell = "prod-general",  tier = "standard", overflow = false, modelPrefix = "t001-" }
-  "<client id>" = { cell = "prod-critical", tier = "gold",     overflow = false, modelPrefix = "t101-" }
+  "<client id>" = { cell = "prod-general",  tier = "standard", overflow = true, modelPrefix = "t001-" }
+  "<client id>" = { cell = "prod-critical", tier = "gold",     overflow = true, modelPrefix = "t101-" }
 }
 ```
 
-Nonprod mirrors prod's 2 + 3 topology. S0 is billed per page, so the extra resources cost
+Nonprod mirrors prod's topology (2 + 3, plus 1 + 1 overflow). S0 is billed per page, so the extra resources cost
 nothing when idle, and load tests stay representative. All IDs in the committed tfvars are
 placeholders marked `TODO`.
 
@@ -146,7 +177,8 @@ placeholders marked `TODO`.
 - Overflow-enabled tenants have an overflow pool in their zone, and none are Restricted.
 - DI accounts per region, including `dedicated_di_count`, stay at or below 20.
 - No pool has more than 30 members. No DI member appears in two pools.
-- `tenant-cell-map` and `di-host-map` stay within the 4,096-character named-value limit.
+- `tenant-cell-map`, `di-host-map` and `pool-capacity-map` stay within the 4,096-character named-value limit.
+- `overflow_threshold_pct` is 50–100; member `tps` is 1–1000.
 - Variable validation covers zones (general, critical, confidential, restricted), tiers, weights
   and GUID tenant keys.
 
@@ -183,7 +215,9 @@ network: Terraform writes the bootstrap signing keys through Key Vault's private
 | Change | Why |
 | --- | --- |
 | Existing APIM Premium v2, read-only in Terraform | The instance already exists; the design assumed Premium or v2 |
-| Two pools (general 2, critical 3) and no overflow | Requested deployment profile. The design's cells, zones and overflow remain supported by the module |
+| Two pools (general 2, critical 3), each with its own overflow pool | Requested deployment profile |
+| Overflow triggered at 90% of pool capacity, not after the pool is exhausted | Requested: requests spill to overflow before throttling instead of being rejected. The design only used overflow on the final retry after 429s |
+| The per-tenant overflow cap is a share of overflow capacity per second (50%) | Replaces the design's fixed 30 calls / 10 s; it scales with the overflow pool's size |
 | Added a `critical` workload zone | It is isolated from general exactly as Confidential is |
 | `tenant-cell-map` and `di-host-map` stored as base64(JSON) | Raw JSON quotes placed inside `value="{{...}}"` attributes would break the policy XML |
 | Guardrails are `precondition`s, not `check` blocks | `check` blocks only warn |
@@ -214,11 +248,13 @@ Still open (validate in nonprod before rollout):
   diagnostic for per-tenant logging.
 - [ ] **External cache authentication:** APIM connects to Redis with a connection string that
   contains an access key. The key lives in Terraform state and APIM, never in the repo. Switch
-  to Entra auth if APIM supports it for Azure Managed Redis. The cache is only used by the
-  overflow logic, so you can drop Redis while overflow stays off; see `modules/platform/redis.tf`.
+  to Entra auth if APIM supports it for Azure Managed Redis. The cache is required: it holds the
+  counters that trigger overflow.
+- [ ] **Overflow routing:** load test 4 must show spill starting near 90% (`x-daas-pool` in the
+  logs), and APIM Premium v2 must accept `cache-lookup-value` with `default-value` against the
+  external cache. Check how far counters overshoot under your gateway unit count.
 - [ ] Per-tier limits (standard 10/5 s, gold 30/5 s) and the 200,000/day quota are hard-coded in
-  `op-analyze.xml`. Set them from onboarding data, keeping each pool's committed total at or
-  below 80% of its capacity.
+  `op-analyze.xml`. They are the only gateway-side 429s left; set them from onboarding data.
 - [ ] Whether the 20-resource DI limit is per subscription per region, or per region only.
 - [ ] **DeployEz conventions:** align the layout if a template repo exists.
 - [ ] RBAC propagation: on a first apply, APIM may need a few minutes to resolve the Key Vault

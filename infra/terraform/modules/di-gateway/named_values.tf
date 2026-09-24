@@ -17,12 +17,23 @@ resource "azurerm_api_management_named_value" "di_host_map" {
   value               = base64encode(jsonencode(local.di_host_map))
 }
 
+# Pool capacities and thresholds read by the Analyze policy's overflow routing.
+resource "azurerm_api_management_named_value" "pool_capacity_map" {
+  name                = "pool-capacity-map"
+  api_management_name = var.apim_name
+  resource_group_name = local.apim_rg_name
+  display_name        = "pool-capacity-map"
+  value               = base64encode(jsonencode(local.pool_capacity))
+}
+
 resource "azurerm_api_management_named_value" "plain" {
   for_each = {
-    "entra-tenant-id"     = var.entra_tenant_id
-    "di-gateway-audience" = var.gateway_audience
-    "dispatcher-app-id"   = var.dispatcher_app_id
-    "gateway-host"        = var.gateway_host
+    "entra-tenant-id"           = var.entra_tenant_id
+    "di-gateway-audience"       = var.gateway_audience
+    "dispatcher-app-id"         = var.dispatcher_app_id
+    "gateway-host"              = var.gateway_host
+    "overflow-threshold-pct"    = tostring(var.overflow_threshold_pct)
+    "overflow-tenant-share-pct" = tostring(var.overflow_tenant_share_pct)
   }
   name                = each.key
   api_management_name = var.apim_name

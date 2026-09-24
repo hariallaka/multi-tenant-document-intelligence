@@ -60,6 +60,9 @@ module "di_gateway" {
   di_overflow = var.di_overflow
   di_tenants  = var.di_tenants
 
+  overflow_threshold_pct    = var.overflow_threshold_pct
+  overflow_tenant_share_pct = var.overflow_tenant_share_pct
+
   location                 = module.platform.location
   rg_name                  = module.platform.resource_group_name
   pe_subnet_id             = module.platform.pe_subnet_id
@@ -107,4 +110,9 @@ output "tenant_cell_map" {
 output "regional_di_count" {
   description = "DI accounts counted against the regional limit."
   value       = module.di_gateway.regional_di_count
+}
+
+output "pool_capacity" {
+  description = "Pool capacity, spill point and overflow target."
+  value       = module.di_gateway.pool_capacity
 }

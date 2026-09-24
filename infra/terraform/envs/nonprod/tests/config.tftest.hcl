@@ -41,22 +41,32 @@ run "config_passes_guardrails" {
   command = plan
 
   assert {
-    condition     = output.regional_di_count == 5
-    error_message = "Expected 5 DI accounts: 2 general + 3 critical."
+    condition     = output.regional_di_count == 7
+    error_message = "Expected 7 DI accounts: 2 general + 3 critical + 1 general overflow + 1 critical overflow."
   }
 
   assert {
-    condition     = length([for k, a in output.di_accounts : k if a.zone == "general" && a.cell == "np-general"]) == 2
-    error_message = "The general pool must have 2 DI accounts."
+    condition     = length([for k, a in output.di_accounts : k if a.cell == "np-general"]) == 2 && length([for k, a in output.di_accounts : k if a.cell == "np-critical"]) == 3
+    error_message = "The general pool must have 2 DI accounts and the critical pool 3."
   }
 
   assert {
-    condition     = length([for k, a in output.di_accounts : k if a.zone == "critical" && a.cell == "np-critical"]) == 3
-    error_message = "The critical pool must have 3 DI accounts."
+    condition     = length([for k, a in output.di_accounts : k if a.cell == "overflow-general"]) == 1 && length([for k, a in output.di_accounts : k if a.cell == "overflow-critical"]) == 1
+    error_message = "Each zone needs its own overflow pool."
   }
 
   assert {
-    condition     = alltrue([for t in jsondecode(output.tenant_cell_map) : t.overflow == false])
-    error_message = "No overflow pools are configured, so no tenant may be overflow-enabled."
+    condition     = output.pool_capacity["np-general"].spill_at_per_s == 27 && output.pool_capacity["np-general"].overflow_target == "pool-overflow-general"
+    error_message = "General pool must spill to pool-overflow-general at 27 calls/s (90% of 30)."
+  }
+
+  assert {
+    condition     = output.pool_capacity["np-critical"].spill_at_per_s == 40 && output.pool_capacity["np-critical"].overflow_target == "pool-overflow-critical"
+    error_message = "Critical pool must spill to pool-overflow-critical at 40 calls/s (90% of 45)."
+  }
+
+  assert {
+    condition     = alltrue([for t in jsondecode(output.tenant_cell_map) : t.overflow])
+    error_message = "Every tenant is expected to be overflow-enabled."
   }
 }

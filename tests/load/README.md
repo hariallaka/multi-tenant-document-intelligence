@@ -7,7 +7,7 @@ k6 scripts for the six scenarios in `docs/design.md` (Security, observability, c
 | 1 | `01-baseline.js` | All tenants at committed peak, zero 429s |
 | 2 | `02-noisy-tenant.js` | One tenant at 5× limit; other tenants' p95 and 429 rate flat |
 | 3 | `03-member-loss.js` + `disable-member.sh` | Disable one critical member: traffic shifts to the other two within the trip window |
-| 4 | `04-cell-exhaustion.js` | Saturating the general pool leaves critical tenants with zero 429s and flat p95; general sheds load as 429 + Retry-After |
+| 4 | `04-cell-exhaustion.js` | Driving a pool past 90% spills to its own zone's overflow pool (`x-daas-pool`), with no gateway 429s for capacity; critical is unaffected by a general surge |
 | 5 | `05-large-documents.js` | 2,000-page PDFs; GET budget holds |
 | 6 | `06-key-rotation.js` + `scripts/rotate-signing-key.sh` | No result 404s across a key rotation |
 

@@ -1,5 +1,6 @@
-# Azure Managed Redis as the APIM external cache, used by the Analyze policy's
-# per-tenant overflow counters (cache-lookup-value / cache-store-value, external).
+# Azure Managed Redis as the APIM external cache. Required: the Analyze policy keeps
+# per-pool, per-second call counters here (cache-lookup-value / cache-store-value,
+# external) and spills to the zone overflow pool at the overflow threshold.
 resource "azurerm_managed_redis" "this" {
   name                      = local.redis_name
   location                  = var.location
@@ -43,7 +44,7 @@ resource "azurerm_api_management_redis_cache" "this" {
   name              = "external-cache"
   api_management_id = local.apim_id
   cache_location    = "default"
-  description       = "Overflow counters for the DI gateway"
+  description       = "Per-pool capacity counters for DI overflow routing"
   redis_cache_id    = azurerm_managed_redis.this.id
   connection_string = "${azurerm_managed_redis.this.hostname}:${azurerm_managed_redis.this.default_database[0].port},password=${azurerm_managed_redis.this.default_database[0].primary_access_key},ssl=True,abortConnect=False"
 
