@@ -1,28 +1,36 @@
-// 4. Cell exhaustion: saturate a General and a Confidential cell. Each spills only to
-// its own zone's overflow pool, only for overflow-enabled tenants, within caps.
+// 4. Pool exhaustion and isolation: saturate the general pool while the critical pool
+// runs at its committed peak. Critical must be unaffected; general must shed load as
+// 429 + Retry-After at the gateway.
 //
-// GEN_TENANTS / CONF_TENANTS: comma-separated tenants in one General / Confidential cell.
-// NO_OVERFLOW_TENANT: a tenant in the saturated cell with overflow=false.
-// RATE: per-tenant TPS, set so the sum exceeds the cell's DI TPS.
+// GEN_TENANTS:  comma-separated tenants in the general pool (driven at GEN_RATE each,
+//               set so the sum exceeds the pool's 30 Analyze TPS).
+// CRIT_TENANTS: comma-separated tenants in the critical pool (driven at CRIT_RATE each,
+//               within the pool's 36 TPS budget).
 //
-// Pass criteria (queries.kql: overflow-by-zone):
-//   - General tenants' overflow traffic hits only pool-overflow-general members.
-//   - Confidential tenants' overflow traffic hits only pool-overflow-confidential members.
-//   - NO_OVERFLOW_TENANT never reaches an overflow member; it sees 429s instead.
-//   - Per tenant, overflow requests per 10 s window stay <= 30 (policy cap).
+// Pass criteria:
+//   - critical tenants: zero 429s and flat p95 latency.
+//   - general tenants: throttling shows up as 429 + Retry-After, never as 5xx.
+//   - queries.kql (pool-isolation): general traffic hits only general members.
+// If overflow pools are added later, also check overflow-by-zone.
 import { submit, poll, tenantScenario } from './lib.js';
 
-const RATE = parseInt(__ENV.RATE || '10', 10);
+const GEN_RATE = parseInt(__ENV.GEN_RATE || '12', 10);
+const CRIT_RATE = parseInt(__ENV.CRIT_RATE || '6', 10);
 const DURATION = __ENV.DURATION || '10m';
 const list = (s) => (s || '').split(',').filter(Boolean);
-const tenants = [...list(__ENV.GEN_TENANTS), ...list(__ENV.CONF_TENANTS), ...list(__ENV.NO_OVERFLOW_TENANT)];
+const gen = list(__ENV.GEN_TENANTS);
+const crit = list(__ENV.CRIT_TENANTS);
 
-export const options = {
-  scenarios: Object.fromEntries(tenants.map((t) => [`t_${t.slice(-4)}`, tenantScenario(t, RATE, DURATION)])),
-  thresholds: {
-    checks: ['rate>0.99'], // every 429 carries Retry-After
-  },
-};
+const scenarios = {};
+const thresholds = { checks: ['rate>0.99'] }; // every 429 carries Retry-After
+for (const t of gen) scenarios[`gen_${t.slice(-4)}`] = tenantScenario(t, GEN_RATE, DURATION);
+for (const t of crit) {
+  scenarios[`crit_${t.slice(-4)}`] = tenantScenario(t, CRIT_RATE, DURATION);
+  thresholds[`analyze_429{tenant:${t}}`] = ['rate==0'];
+  thresholds[`analyze_latency{tenant:${t}}`] = ['p(95)<2000'];
+}
+
+export const options = { scenarios, thresholds };
 
 export function submitAndPoll() {
   const url = submit(__ENV.TENANT);

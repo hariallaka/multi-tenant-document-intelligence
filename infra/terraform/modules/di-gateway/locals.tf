@@ -1,4 +1,9 @@
 locals {
+  # Workload zones. A zone never shares DI resources or overflow with another zone.
+  zones = ["general", "critical", "confidential", "restricted"]
+
+  apim_rg_name = coalesce(var.apim_resource_group_name, var.rg_name)
+
   # Pinned ARM API version for APIM backends. 2024-05-01 is the latest GA version
   # whose schema carries both circuitBreaker and pool (checked against azapi v2.12.0).
   apim_backends_type = "Microsoft.ApiManagement/service/backends@2024-05-01"

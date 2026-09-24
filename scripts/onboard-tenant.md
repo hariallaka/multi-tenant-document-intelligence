@@ -1,63 +1,61 @@
-# Runbook: onboard a tenant
+# Runbook: onboard a workload (tenant)
 
-Placement is decided once, at onboarding, by committed peak TPS. It lands in
+A tenant is an internal application, identified by its Entra client ID, assigned to one pool.
+Placement is decided at onboarding by committed **peak** TPS. It lands in
 `infra/terraform/envs/<env>/di.auto.tfvars` and deploys through the pipeline, never by hand.
 
-## 1. Collect from the tenant
+## 1. Collect from the workload owner
 
 | Input | Used for |
 | --- | --- |
-| Entra client ID of the calling app (or apps) | `di_tenants` key; the gateway's tenant identity |
-| Zone: General, Confidential or Restricted | Which cells are eligible |
-| Peak Analyze TPS (not average) | Cell budget |
+| Entra client ID of the calling app | `di_tenants` key; the gateway's tenant identity |
+| Workload class: general or critical | Which pool |
+| Peak Analyze TPS (not average) | Pool budget |
 | Average pages per document and processing time | GET budget |
-| Prebuilt or custom models | Model prefix, replication, overflow eligibility |
+| Prebuilt or custom models | Model prefix and replication |
 | Daily volume | `quota-by-key` (currently 200,000/day for all tiers) |
 
-## 2. Choose the tier
+## 2. Choose the pool
+
+| Pool | Members | Admission budget (80%) | Use for |
+| --- | --- | --- | --- |
+| `<env>-general` | 2 | 24 Analyze TPS, 80 GET/s | Everything not business-critical |
+| `<env>-critical` | 3 | 36 Analyze TPS, 120 GET/s | Workloads that must not be throttled by others |
+
+The pools share no DI resources, so placing a workload in critical protects it from general traffic.
+
+## 3. Choose the tier
 
 | Tier | Gateway limit (op-analyze.xml) | Typical peak |
 | --- | --- | --- |
 | standard | 10 calls / 5 s (2 TPS average) | ≤ 2 TPS |
 | gold | 30 calls / 5 s (6 TPS average) | ≤ 6 TPS |
 
-A tenant above gold needs a new tier in the policy, or promotion to Dedicated.
+A workload above gold needs a new tier in the policy, or a dedicated pool.
 
-## 3. Place the tenant (80% budget rule)
+## 4. Check the budget (80% rule)
 
-For each cell in the tenant's (environment, zone):
+For the chosen pool:
 
-- **Analyze budget:** sum of committed peaks + this tenant's peak ≤ 0.8 × cell Analyze TPS.
-  Cell Analyze TPS is the sum of member TPS (15 per member by default, or the approved increase).
-- **GET budget:** for each member, `(POST/s × avg processing s) ÷ 2` ≤ 0.8 × 50.
+- **Analyze budget:** sum of committed peaks + this workload's peak ≤ the pool's budget above
+  (0.8 × members × 15 TPS, or the approved per-member TPS).
+- **GET budget:** `(POST/s × avg processing s) ÷ 2` for the pool ≤ its GET budget above.
   GET is often the binding limit for large, slow documents.
 
-Pick the cell with the most headroom that passes both checks.
+The comment at the top of `di.auto.tfvars` keeps a running total per pool; update it.
 
-**No cell fits:**
-1. If the regional budget allows (the `regional_di_count` output plus 2 ≤ 20), add a cell of
-   2 members to `di_cells`.
-2. Otherwise promote the tenant to Dedicated (step 5).
+**The pool is full:**
+1. Ask Microsoft for a TPS increase on the pool's members (support ticket with usage evidence),
+   then raise each member's `weight` to match (e.g. 3 for 45 TPS).
+2. Or add a member to the pool (`di_cells.<pool>.members`), within the 20-per-region limit
+   (the `regional_di_count` output).
+3. Or add a zone-specific overflow pool (`di_overflow.<zone>`) and set `overflow = true` on
+   the workloads allowed to use it.
 
-**Restricted** tenants always get a Dedicated cell (`zone = "restricted"`, one or more members)
-with `overflow = false`.
+## 5. Custom models
 
-## 4. Set overflow
-
-`overflow = true` only if **all** of these hold:
-
-- The tenant's zone is General or Confidential, and `di_overflow` has a pool for that zone.
-- The tenant uses prebuilt models only, **or** its custom models are replicated to every
-  member of its cell **and** its zone's overflow pool (see `scripts/model-copy/README.md`).
-
-The guardrails in `modules/di-gateway/checks.tf` fail the plan for Restricted or zone-less overflow.
-
-## 5. Promote to Dedicated
-
-Promote when the tenant's overflow share exceeds its cap for 15 minutes (the overflow-by-zone
-alert), or when it does not fit any cell. Add a single-member cell for the tenant and move
-its `di_tenants` entry to it. Dedicated resources managed by another stack count against the
-regional limit through `dedicated_di_count`.
+Custom models must exist on **every** member of the workload's pool under the same model ID,
+or a retry that lands on another member fails. See `scripts/model-copy/README.md`.
 
 ## 6. Add the entry and deploy
 
@@ -65,13 +63,13 @@ regional limit through `dedicated_di_count`.
 # infra/terraform/envs/prod/di.auto.tfvars
 di_tenants = {
   # ...
-  "<entra client id>" = { cell = "prod-gen-c", tier = "standard", overflow = true, modelPrefix = "t006-" }
+  "<entra client id>" = { cell = "prod-critical", tier = "gold", overflow = false, modelPrefix = "t103-" }
 }
 ```
 
-- `modelPrefix` is unique per tenant; the gateway only allows `prebuilt-*` or models with this prefix.
+- `modelPrefix` is unique per workload; the gateway only allows `prebuilt-*` or models with this prefix.
 - Open a PR. The pipeline runs fmt, validate, tflint, checkov, guardrail tests and plan.
   The plan should show only the `tenant-cell-map` named value changing.
-- After approval, apply. Give the tenant the gateway host and audience, and tell them to:
+- After approval, apply. Give the workload the gateway host and audience, and tell them to:
   poll no more often than every 2 s, honour `Retry-After`, send documents over 50 MB as
   `urlSource`, and ramp load gradually.

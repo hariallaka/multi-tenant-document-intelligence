@@ -1,5 +1,5 @@
 output "resource_group_name" {
-  description = "Resource group holding the gateway platform (and the DI accounts)."
+  description = "Resource group holding the DI accounts and supporting resources."
   value       = azurerm_resource_group.this.name
 }
 
@@ -9,41 +9,46 @@ output "location" {
 }
 
 output "pe_subnet_id" {
-  description = "Private endpoint subnet."
-  value       = azurerm_subnet.pe.id
+  description = "Subnet for the DI private endpoints."
+  value       = local.pe_subnet_id
+  depends_on  = [azurerm_subnet_network_security_group_association.pe, azurerm_virtual_network_peering.apim_to_spoke]
 }
 
 output "cognitiveservices_dns_zone_id" {
   description = "privatelink.cognitiveservices.azure.com zone ID."
   value       = local.dns_zone_ids["cognitiveservices"]
+  depends_on  = [azurerm_private_dns_zone_virtual_network_link.this]
 }
 
+# APIM outputs wait for the guardrails, so nothing is added to an instance that
+# fails them.
 output "apim_id" {
-  description = "APIM resource ID."
-  value       = azurerm_api_management.this.id
+  description = "Existing APIM resource ID."
+  value       = local.apim_id
+  depends_on  = [terraform_data.apim_guardrails]
 }
 
 output "apim_name" {
-  description = "APIM name."
-  value       = azurerm_api_management.this.name
+  description = "Existing APIM name."
+  value       = var.apim_name
+}
+
+output "apim_resource_group_name" {
+  description = "Existing APIM resource group."
+  value       = var.apim_resource_group_name
 }
 
 output "apim_gateway_host" {
-  description = "Default internal gateway host (<name>.azure-api.net)."
-  value       = "${azurerm_api_management.this.name}.azure-api.net"
-}
-
-output "apim_private_ip_addresses" {
-  description = "Private IPs of the internal gateway."
-  value       = azurerm_api_management.this.private_ip_addresses
+  description = "Gateway host from the existing instance (resolved privately by your DNS)."
+  value       = local.apim_gateway_host
 }
 
 # Consumers must not create policies that read these until APIM can resolve them,
 # so the outputs wait for the RBAC grant, the external cache and the secrets.
 output "apim_principal_id" {
   description = "APIM system-assigned identity object ID."
-  value       = azurerm_api_management.this.identity[0].principal_id
-  depends_on  = [azurerm_role_assignment.apim_kv, azurerm_api_management_redis_cache.this]
+  value       = local.apim_principal_id
+  depends_on  = [terraform_data.apim_guardrails, azurerm_role_assignment.apim_kv, azurerm_api_management_redis_cache.this]
 }
 
 output "signing_secret_id" {
@@ -70,6 +75,6 @@ output "log_analytics_workspace_id" {
 
 output "apim_logger_id" {
   description = "Built-in azuremonitor logger, used by the API diagnostic."
-  value       = "${azurerm_api_management.this.id}/loggers/azuremonitor"
+  value       = "${local.apim_id}/loggers/azuremonitor"
   depends_on  = [azurerm_monitor_diagnostic_setting.apim]
 }

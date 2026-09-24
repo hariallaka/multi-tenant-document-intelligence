@@ -9,7 +9,7 @@ variable "environment" {
 }
 
 variable "location" {
-  description = "Azure region."
+  description = "Azure region for the DI accounts and supporting resources. Must be the APIM instance's region."
   type        = string
 }
 
@@ -19,7 +19,7 @@ variable "name_prefix" {
 }
 
 variable "unique_suffix" {
-  description = "Short lowercase alphanumeric suffix for globally unique names (APIM, Key Vault, Redis)."
+  description = "Short lowercase alphanumeric suffix for globally unique names (Key Vault, Redis)."
   type        = string
 
   validation {
@@ -29,34 +29,68 @@ variable "unique_suffix" {
 }
 
 variable "tags" {
-  description = "Tags applied to every resource."
+  description = "Tags applied to every resource this module creates."
   type        = map(string)
   default     = {}
 }
 
 # ---------------------------------------------------------------------------
-# Network
+# Existing APIM Premium v2 instance
 # ---------------------------------------------------------------------------
 
-variable "vnet_address_space" {
-  description = "Address space of the gateway spoke VNet."
-  type        = list(string)
+variable "apim_name" {
+  description = "Name of the existing APIM Premium v2 instance."
+  type        = string
 }
 
-variable "apim_subnet_prefix" {
-  description = "Prefix for the APIM subnet (/27 or larger for Premium VNet injection)."
+variable "apim_resource_group_name" {
+  description = "Resource group of the existing APIM instance."
   type        = string
+}
+
+variable "apim_vnet_id" {
+  description = "VNet the APIM instance is injected into (or integrated with). Private DNS zones are linked to it so APIM resolves the DI private endpoints."
+  type        = string
+}
+
+variable "require_private_apim" {
+  description = "Fail the plan unless the APIM instance is private (Internal VNet injection or public network access disabled) and has no public IP."
+  type        = bool
+  default     = true
+}
+
+variable "enable_apim_diagnostics" {
+  description = "Add a diagnostic setting on the APIM instance that sends gateway logs to this module's Log Analytics workspace."
+  type        = bool
+  default     = true
+}
+
+# ---------------------------------------------------------------------------
+# Network for the private endpoints
+# ---------------------------------------------------------------------------
+
+variable "existing_pe_subnet_id" {
+  description = "Existing subnet for the DI, Key Vault and Redis private endpoints, reachable from APIM. Null creates a spoke VNet with a PE subnet peered to apim_vnet_id."
+  type        = string
+  default     = null
+}
+
+variable "vnet_address_space" {
+  description = "Address space of the spoke VNet created when existing_pe_subnet_id is null."
+  type        = list(string)
+  default     = []
 }
 
 variable "pe_subnet_prefix" {
-  description = "Prefix for the private endpoint subnet (DI, Key Vault, Redis)."
-  type        = string
-}
-
-variable "hub_vnet_id" {
-  description = "Hub VNet to peer with (spoke side only; the hub side is owned by the landing zone). Null skips peering."
+  description = "Prefix of the PE subnet created when existing_pe_subnet_id is null."
   type        = string
   default     = null
+}
+
+variable "create_reverse_peering" {
+  description = "Also create the APIM VNet -> spoke peering (needs Network Contributor on the APIM VNet). Disable when the network team owns that side."
+  type        = bool
+  default     = true
 }
 
 variable "dns_servers" {
@@ -66,7 +100,7 @@ variable "dns_servers" {
 }
 
 variable "existing_private_dns_zone_ids" {
-  description = "Private DNS zone IDs owned by the hub, keyed by cognitiveservices, vaultcore, redis. Zones not listed are created here and linked to the spoke."
+  description = "Private DNS zone IDs owned by the hub, keyed by cognitiveservices, vaultcore, redis. Zones not listed are created here and linked to the APIM VNet (and the spoke, if created)."
   type        = map(string)
   default     = {}
 
@@ -74,43 +108,6 @@ variable "existing_private_dns_zone_ids" {
     condition     = alltrue([for k in keys(var.existing_private_dns_zone_ids) : contains(["cognitiveservices", "vaultcore", "redis"], k)])
     error_message = "existing_private_dns_zone_ids keys must be cognitiveservices, vaultcore or redis."
   }
-}
-
-variable "create_apim_dns_zone" {
-  description = "Create an azure-api.net private zone with records for the internal APIM gateway. Disable when the hub resolves APIM."
-  type        = bool
-  default     = true
-}
-
-# ---------------------------------------------------------------------------
-# APIM
-# ---------------------------------------------------------------------------
-
-variable "apim_sku_name" {
-  description = "APIM SKU. Premium_<units> for classic VNet injection (internal mode)."
-  type        = string
-  default     = "Premium_1"
-
-  validation {
-    condition     = can(regex("^Premium_[0-9]+$", var.apim_sku_name))
-    error_message = "The design requires internal VNet injection, which needs a Premium_<units> SKU."
-  }
-}
-
-variable "apim_zones" {
-  description = "Availability zones for APIM units. Empty for none."
-  type        = list(string)
-  default     = []
-}
-
-variable "publisher_name" {
-  description = "APIM publisher name."
-  type        = string
-}
-
-variable "publisher_email" {
-  description = "APIM publisher email."
-  type        = string
 }
 
 # ---------------------------------------------------------------------------

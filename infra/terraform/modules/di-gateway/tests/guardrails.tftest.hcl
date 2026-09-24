@@ -193,3 +193,51 @@ run "unknown_tier_rejected" {
 
   expect_failures = [var.di_tenants]
 }
+
+run "general_and_critical_pools_plan" {
+  command = plan
+
+  variables {
+    di_cells = {
+      "t-general"  = { zone = "general", members = { "di-t-gen-1" = { weight = 1 }, "di-t-gen-2" = { weight = 1 } } }
+      "t-critical" = { zone = "critical", members = { "di-t-crit-1" = { weight = 1 }, "di-t-crit-2" = { weight = 1 }, "di-t-crit-3" = { weight = 1 } } }
+    }
+    di_overflow = {}
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000001" = { cell = "t-general", tier = "standard", overflow = false, modelPrefix = "t001-" }
+      "3f1c0d8e-0000-0000-0000-000000000101" = { cell = "t-critical", tier = "gold", overflow = false, modelPrefix = "t101-" }
+    }
+    apim_resource_group_name = "rg-apim"
+  }
+
+  assert {
+    condition     = length(azapi_resource.cell_pool["t-critical"].body.properties.pool.services) == 3 && length(azapi_resource.cell_pool["t-general"].body.properties.pool.services) == 2
+    error_message = "Expected a 2-member general pool and a 3-member critical pool."
+  }
+
+  assert {
+    condition     = length(azapi_resource.overflow_pool) == 0
+    error_message = "No overflow pools were configured."
+  }
+
+  assert {
+    condition     = azurerm_api_management_api.di_v1.resource_group_name == "rg-apim" && azurerm_cognitive_account.di["di-t-crit-1"].resource_group_name == "rg-test"
+    error_message = "APIM objects go to the APIM resource group; DI accounts to rg_name."
+  }
+}
+
+run "critical_overflow_without_pool_fails" {
+  command = plan
+
+  variables {
+    di_cells = {
+      "t-critical" = { zone = "critical", members = { "di-t-crit-1" = { weight = 1 } } }
+    }
+    di_overflow = {}
+    di_tenants = {
+      "3f1c0d8e-0000-0000-0000-000000000101" = { cell = "t-critical", tier = "gold", overflow = true, modelPrefix = "t101-" }
+    }
+  }
+
+  expect_failures = [terraform_data.guardrails]
+}

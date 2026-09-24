@@ -6,8 +6,8 @@ k6 scripts for the six scenarios in `docs/design.md` (Security, observability, c
 | --- | --- | --- |
 | 1 | `01-baseline.js` | All tenants at committed peak, zero 429s |
 | 2 | `02-noisy-tenant.js` | One tenant at 5× limit; other tenants' p95 and 429 rate flat |
-| 3 | `03-member-loss.js` + `disable-member.sh` | Traffic shifts within the trip window; retries land on another member |
-| 4 | `04-cell-exhaustion.js` | Spill only to own zone's overflow, only for overflow-enabled tenants, within caps |
+| 3 | `03-member-loss.js` + `disable-member.sh` | Disable one critical member: traffic shifts to the other two within the trip window |
+| 4 | `04-cell-exhaustion.js` | Saturating the general pool leaves critical tenants with zero 429s and flat p95; general sheds load as 429 + Retry-After |
 | 5 | `05-large-documents.js` | 2,000-page PDFs; GET budget holds |
 | 6 | `06-key-rotation.js` + `scripts/rotate-signing-key.sh` | No result 404s across a key rotation |
 
@@ -18,8 +18,8 @@ k6 scripts for the six scenarios in `docs/design.md` (Security, observability, c
 cat > tokens.json <<JSON
 { "3f1c0d8e-0000-0000-0000-000000000901": "<token>", "3f1c0d8e-0000-0000-0000-000000000902": "<token>" }
 JSON
-export GATEWAY=https://apim-daas-di-np-x7n.azure-api.net/di/v1 TOKENS_FILE=tokens.json DOC_URL=<urlSource>
+export GATEWAY=https://apim-daas-np.azure-api.net/di/v1  # the existing APIM instance's (private) gateway host TOKENS_FILE=tokens.json DOC_URL=<urlSource>
 k6 run -e PEAKS='{"3f1c0d8e-0000-0000-0000-000000000901":2,"3f1c0d8e-0000-0000-0000-000000000902":6}' 01-baseline.js
 ```
 
-Run from a host with line-of-sight to the internal gateway. Judge tests 3 and 4 with `queries.kql`, because DI logs carry no tenant.
+Run from a host inside the private network: the gateway has no public endpoint. Judge tests 3 and 4 with `queries.kql`, because DI logs carry no tenant.

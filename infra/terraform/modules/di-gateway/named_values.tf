@@ -4,7 +4,7 @@
 resource "azurerm_api_management_named_value" "tenant_cell_map" {
   name                = "tenant-cell-map"
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = "tenant-cell-map"
   value               = base64encode(jsonencode(local.tenant_cell_map))
 }
@@ -12,7 +12,7 @@ resource "azurerm_api_management_named_value" "tenant_cell_map" {
 resource "azurerm_api_management_named_value" "di_host_map" {
   name                = "di-host-map"
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = "di-host-map"
   value               = base64encode(jsonencode(local.di_host_map))
 }
@@ -26,7 +26,7 @@ resource "azurerm_api_management_named_value" "plain" {
   }
   name                = each.key
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = each.key
   value               = each.value
 }
@@ -40,7 +40,7 @@ resource "azurerm_api_management_named_value" "signing" {
   }
   name                = each.key
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = each.key
   secret              = true
 

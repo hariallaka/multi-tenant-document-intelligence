@@ -23,7 +23,7 @@ resource "azurerm_private_endpoint" "redis" {
   name                = "pe-${local.redis_name}"
   location            = var.location
   resource_group_name = azurerm_resource_group.this.name
-  subnet_id           = azurerm_subnet.pe.id
+  subnet_id           = local.pe_subnet_id
   tags                = local.tags
 
   private_service_connection {
@@ -41,11 +41,11 @@ resource "azurerm_private_endpoint" "redis" {
 
 resource "azurerm_api_management_redis_cache" "this" {
   name              = "external-cache"
-  api_management_id = azurerm_api_management.this.id
+  api_management_id = local.apim_id
   cache_location    = "default"
   description       = "Overflow counters for the DI gateway"
   redis_cache_id    = azurerm_managed_redis.this.id
   connection_string = "${azurerm_managed_redis.this.hostname}:${azurerm_managed_redis.this.default_database[0].port},password=${azurerm_managed_redis.this.default_database[0].primary_access_key},ssl=True,abortConnect=False"
 
-  depends_on = [azurerm_private_endpoint.redis]
+  depends_on = [azurerm_private_endpoint.redis, terraform_data.apim_guardrails]
 }

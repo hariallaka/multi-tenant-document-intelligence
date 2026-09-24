@@ -26,7 +26,7 @@ resource "azurerm_private_endpoint" "key_vault" {
   name                = "pe-${local.key_vault_name}"
   location            = var.location
   resource_group_name = azurerm_resource_group.this.name
-  subnet_id           = azurerm_subnet.pe.id
+  subnet_id           = local.pe_subnet_id
   tags                = local.tags
 
   private_service_connection {
@@ -46,8 +46,10 @@ resource "azurerm_private_endpoint" "key_vault" {
 resource "azurerm_role_assignment" "apim_kv" {
   scope                = azurerm_key_vault.this.id
   role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_api_management.this.identity[0].principal_id
+  principal_id         = local.apim_principal_id
   principal_type       = "ServicePrincipal"
+
+  depends_on = [terraform_data.apim_guardrails]
 }
 
 # The pipeline identity (WIF) writes the bootstrap secrets.

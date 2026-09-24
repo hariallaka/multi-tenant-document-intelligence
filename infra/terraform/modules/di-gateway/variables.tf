@@ -3,15 +3,15 @@
 # ---------------------------------------------------------------------------
 
 variable "di_cells" {
-  description = "Home cells. Each cell is one APIM pool of 2-3 DI resources in one zone. Member keys are stable backend keys (e.g. di-prod-gen-a1)."
+  description = "Home cells. Each cell is one APIM pool of DI resources in one workload zone (general, critical, confidential, restricted). Member keys are stable backend keys (e.g. di-prod-gen-1)."
   type = map(object({
     zone    = string
     members = map(object({ weight = number }))
   }))
 
   validation {
-    condition     = alltrue([for c in var.di_cells : contains(["general", "confidential", "restricted"], c.zone)])
-    error_message = "Cell zone must be one of: general, confidential, restricted."
+    condition     = alltrue([for c in var.di_cells : contains(local.zones, c.zone)])
+    error_message = "Cell zone must be one of: general, critical, confidential, restricted."
   }
 
   validation {
@@ -26,13 +26,13 @@ variable "di_cells" {
 }
 
 variable "di_overflow" {
-  description = "Overflow pools, keyed by zone (general, confidential). Restricted never gets an overflow pool."
+  description = "Optional overflow pools, keyed by zone. Each zone's pool is its own (never shared); Restricted never gets one."
   type        = map(map(object({ weight = number })))
   default     = {}
 
   validation {
-    condition     = alltrue([for z in keys(var.di_overflow) : contains(["general", "confidential"], z)])
-    error_message = "Overflow pools may only be defined for the general and confidential zones."
+    condition     = alltrue([for z in keys(var.di_overflow) : contains(local.zones, z) && z != "restricted"])
+    error_message = "Overflow pools may only be defined for the general, critical and confidential zones."
   }
 
   validation {
@@ -76,8 +76,14 @@ variable "location" {
 }
 
 variable "rg_name" {
-  description = "Resource group for DI accounts and private endpoints. Must also be the APIM instance's resource group."
+  description = "Resource group for DI accounts and private endpoints."
   type        = string
+}
+
+variable "apim_resource_group_name" {
+  description = "Resource group of the APIM instance. Null means the same as rg_name."
+  type        = string
+  default     = null
 }
 
 variable "pe_subnet_id" {
@@ -91,12 +97,12 @@ variable "dns_zone_id" {
 }
 
 variable "apim_id" {
-  description = "Resource ID of the internal APIM instance."
+  description = "Resource ID of the APIM instance (Premium v2, private)."
   type        = string
 }
 
 variable "apim_name" {
-  description = "Name of the internal APIM instance."
+  description = "Name of the APIM instance."
   type        = string
 }
 

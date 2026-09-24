@@ -32,21 +32,23 @@ provider "azapi" {
 module "platform" {
   source = "../../modules/platform"
 
-  environment                   = var.environment
-  location                      = var.location
-  name_prefix                   = var.name_prefix
-  unique_suffix                 = var.unique_suffix
+  environment   = var.environment
+  location      = var.location
+  name_prefix   = var.name_prefix
+  unique_suffix = var.unique_suffix
+
+  # Existing APIM Premium v2 instance (not managed here).
+  apim_name                = var.apim_name
+  apim_resource_group_name = var.apim_resource_group_name
+  apim_vnet_id             = var.apim_vnet_id
+  require_private_apim     = var.require_private_apim
+
+  existing_pe_subnet_id         = var.existing_pe_subnet_id
   vnet_address_space            = var.vnet_address_space
-  apim_subnet_prefix            = var.apim_subnet_prefix
   pe_subnet_prefix              = var.pe_subnet_prefix
-  hub_vnet_id                   = var.hub_vnet_id
+  create_reverse_peering        = var.create_reverse_peering
   dns_servers                   = var.dns_servers
   existing_private_dns_zone_ids = var.existing_private_dns_zone_ids
-  create_apim_dns_zone          = var.create_apim_dns_zone
-  apim_sku_name                 = var.apim_sku_name
-  apim_zones                    = var.apim_zones
-  publisher_name                = var.publisher_name
-  publisher_email               = var.publisher_email
   redis_sku_name                = var.redis_sku_name
   tags                          = var.tags
 }
@@ -58,15 +60,16 @@ module "di_gateway" {
   di_overflow = var.di_overflow
   di_tenants  = var.di_tenants
 
-  location               = module.platform.location
-  rg_name                = module.platform.resource_group_name
-  pe_subnet_id           = module.platform.pe_subnet_id
-  dns_zone_id            = module.platform.cognitiveservices_dns_zone_id
-  apim_id                = module.platform.apim_id
-  apim_name              = module.platform.apim_name
-  apim_principal_id      = module.platform.apim_principal_id
-  signing_secret_id      = module.platform.signing_secret_id
-  signing_secret_prev_id = module.platform.signing_secret_prev_id
+  location                 = module.platform.location
+  rg_name                  = module.platform.resource_group_name
+  pe_subnet_id             = module.platform.pe_subnet_id
+  dns_zone_id              = module.platform.cognitiveservices_dns_zone_id
+  apim_id                  = module.platform.apim_id
+  apim_name                = module.platform.apim_name
+  apim_resource_group_name = module.platform.apim_resource_group_name
+  apim_principal_id        = module.platform.apim_principal_id
+  signing_secret_id        = module.platform.signing_secret_id
+  signing_secret_prev_id   = module.platform.signing_secret_prev_id
 
   entra_tenant_id   = var.entra_tenant_id
   gateway_audience  = var.gateway_audience
@@ -82,13 +85,8 @@ module "di_gateway" {
 }
 
 output "apim_gateway_host" {
-  description = "Internal gateway host."
+  description = "Gateway host of the existing APIM instance."
   value       = module.platform.apim_gateway_host
-}
-
-output "apim_private_ip_addresses" {
-  description = "Gateway private IPs."
-  value       = module.platform.apim_private_ip_addresses
 }
 
 output "key_vault_name" {

@@ -8,7 +8,14 @@ ApiManagementGatewayLogs
 | extend landedElsewhere = tostring(attempts[0]) != tostring(attempts[1])
 | summarize requests = count(), landedElsewhere = countif(landedElsewhere)
 
-// overflow-by-zone (test 4): which tenants reached which overflow pool, per 10 s window.
+// pool-isolation (test 4): which DI member served each tenant's analyze calls.
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h) and OperationId == "analyze"
+| extend tenant = tostring(parse_json(ResponseHeaders)["x-daas-tenant"])
+| summarize calls = count(), throttled = countif(ResponseCode == 429) by tenant, BackendId, BackendUrl
+| order by tenant asc
+
+// overflow-by-zone (test 4, only if overflow pools are configured): which tenants reached which overflow pool, per 10 s window.
 ApiManagementGatewayLogs
 | where TimeGenerated > ago(1h) and OperationId == "analyze"
 | extend tenant = tostring(parse_json(ResponseHeaders)["x-daas-tenant"])

@@ -7,11 +7,12 @@ resource "azurerm_log_analytics_workspace" "this" {
   tags                = local.tags
 }
 
-# APIM resource logs (GatewayLogs carry backend, status and the logged
-# x-daas-tenant header) go to resource-specific tables.
+# APIM gateway logs (backend, status and the logged x-daas-tenant header) go to
+# resource-specific tables. Adds a diagnostic setting to the existing instance.
 resource "azurerm_monitor_diagnostic_setting" "apim" {
-  name                           = "diag-${local.apim_name}"
-  target_resource_id             = azurerm_api_management.this.id
+  count                          = var.enable_apim_diagnostics ? 1 : 0
+  name                           = "diag-${var.name_prefix}-di-gateway"
+  target_resource_id             = local.apim_id
   log_analytics_workspace_id     = azurerm_log_analytics_workspace.this.id
   log_analytics_destination_type = "Dedicated"
 

@@ -1,18 +1,24 @@
 # CLAUDE.md
 
-Shared, multi-tenant Azure AI Document Intelligence behind an internal APIM gateway.
-`docs/design.md` is the source of truth. Read it before changing policies or routing.
+Shared, multi-tenant Azure AI Document Intelligence behind an existing, private APIM Premium v2
+instance. `docs/design.md` is the source of truth for policies and routing. The README's
+"Deployment profile" records where this repo narrows it: the APIM instance already exists,
+there are two pools (general 2 DI, critical 3 DI) and no overflow.
 
 ## Hard constraints (never relax)
 
 - DI accounts: `public_network_access_enabled = false`, `local_auth_enabled = false`,
   private endpoints only. APIM reaches DI with its managed identity. No API keys anywhere.
 - No secrets in the repo. Signing keys are Key Vault references. Pipelines use WIF (OIDC).
-- Overflow is per zone (`pool-overflow-general`, `pool-overflow-confidential`). Restricted never overflows.
+- The APIM instance itself is never created or reconfigured by Terraform (it only adds APIs, backends,
+  named values, the external cache and a diagnostic setting). It is read in `modules/platform/existing_apim.tf`,
+  and the plan must fail unless it is Premium v2, private and without a public IP. Never add a public IP.
+- Pools never share DI resources. Overflow, if added, is per zone (`pool-overflow-<zone>`).
+  Restricted never overflows.
 - APIM backends and pools use `azapi_resource` pinned to `Microsoft.ApiManagement/service/backends@2024-05-01`
   (`local.apim_backends_type`). Provider versions are pinned in `envs/*/main.tf`.
 - The Result operation targets a single backend: never a pool, never a retry.
-- Backend keys are stable member names (e.g. `di-prod-gen-a1`), never hostnames.
+- Backend keys are stable member names (e.g. `di-prod-gen-1`), never hostnames.
 
 ## Conventions
 
@@ -30,8 +36,7 @@ Shared, multi-tenant Azure AI Document Intelligence behind an internal APIM gate
 
 ```bash
 terraform fmt -recursive infra/terraform
-(cd infra/terraform/modules/di-gateway && terraform init -backend=false && terraform test)
-for e in nonprod prod; do (cd infra/terraform/envs/$e && terraform init -backend=false && terraform validate && terraform test); done
+for d in modules/platform modules/di-gateway envs/nonprod envs/prod; do (cd infra/terraform/$d && terraform init -backend=false && terraform validate && terraform test); done
 for d in infra/terraform/{modules/di-gateway,modules/platform,envs/nonprod,envs/prod}; do tflint --config=$PWD/.tflint.hcl --chdir=$d; done
 checkov -d infra/terraform --framework terraform --quiet
 python3 -m pytest tests/policy

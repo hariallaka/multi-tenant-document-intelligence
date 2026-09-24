@@ -1,8 +1,9 @@
 # DI gateway: fmt -> validate -> tflint -> checkov -> tests -> plan -> approval -> apply
 #
 # Service connections use Workload Identity Federation (no client secrets).
-# The agent pool must have private network line-of-sight to Key Vault (the
-# bootstrap signing keys are written through its private endpoint).
+# The agent pool must run inside the private network: Key Vault and Redis have no
+# public endpoint, and the bootstrap signing keys are written through Key Vault's
+# private endpoint. The APIM instance (Premium v2) already exists and is only read.
 
 trigger:
   branches:
@@ -70,8 +71,10 @@ stages:
 
           - script: |
               set -euo pipefail
-              terraform -chdir=$(tfRoot)/modules/di-gateway init -backend=false -input=false
-              terraform -chdir=$(tfRoot)/modules/di-gateway test
+              for dir in modules/platform modules/di-gateway; do
+                terraform -chdir=$(tfRoot)/$dir init -backend=false -input=false
+                terraform -chdir=$(tfRoot)/$dir test
+              done
               for env in nonprod prod; do
                 terraform -chdir=$(tfRoot)/envs/$env test
               done

@@ -29,25 +29,49 @@ variable "tags" {
   default     = {}
 }
 
-variable "vnet_address_space" {
-  description = "Spoke VNet address space."
-  type        = list(string)
+variable "apim_name" {
+  description = "Existing APIM Premium v2 instance."
+  type        = string
 }
 
-variable "apim_subnet_prefix" {
-  description = "APIM subnet prefix."
+variable "apim_resource_group_name" {
+  description = "Resource group of the existing APIM instance."
   type        = string
+}
+
+variable "apim_vnet_id" {
+  description = "VNet the APIM instance is injected into."
+  type        = string
+}
+
+variable "require_private_apim" {
+  description = "Fail the plan if the APIM instance is reachable from the internet."
+  type        = bool
+  default     = true
+}
+
+variable "existing_pe_subnet_id" {
+  description = "Existing PE subnet reachable from APIM, or null to create a peered spoke."
+  type        = string
+  default     = null
+}
+
+variable "vnet_address_space" {
+  description = "Spoke VNet address space (when existing_pe_subnet_id is null)."
+  type        = list(string)
+  default     = []
 }
 
 variable "pe_subnet_prefix" {
-  description = "Private endpoint subnet prefix."
-  type        = string
-}
-
-variable "hub_vnet_id" {
-  description = "Hub VNet to peer with, or null."
+  description = "Spoke PE subnet prefix (when existing_pe_subnet_id is null)."
   type        = string
   default     = null
+}
+
+variable "create_reverse_peering" {
+  description = "Create the APIM VNet -> spoke peering as well."
+  type        = bool
+  default     = true
 }
 
 variable "dns_servers" {
@@ -60,34 +84,6 @@ variable "existing_private_dns_zone_ids" {
   description = "Hub-owned private DNS zone IDs (cognitiveservices, vaultcore, redis)."
   type        = map(string)
   default     = {}
-}
-
-variable "create_apim_dns_zone" {
-  description = "Create an azure-api.net private zone for the internal gateway."
-  type        = bool
-  default     = true
-}
-
-variable "apim_sku_name" {
-  description = "APIM SKU (Premium_<units>)."
-  type        = string
-  default     = "Premium_1"
-}
-
-variable "apim_zones" {
-  description = "Availability zones for APIM."
-  type        = list(string)
-  default     = []
-}
-
-variable "publisher_name" {
-  description = "APIM publisher name."
-  type        = string
-}
-
-variable "publisher_email" {
-  description = "APIM publisher email."
-  type        = string
 }
 
 variable "redis_sku_name" {

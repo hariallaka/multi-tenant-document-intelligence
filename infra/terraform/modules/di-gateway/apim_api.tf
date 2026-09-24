@@ -1,7 +1,7 @@
 resource "azurerm_api_management_api" "di_v1" {
   name                  = "di-v1"
   api_management_name   = var.apim_name
-  resource_group_name   = var.rg_name
+  resource_group_name   = local.apim_rg_name
   revision              = "1"
   display_name          = "Document Intelligence v1"
   description           = "Shared Document Intelligence gateway. Tenants authenticate with Entra tokens; the gateway routes to the tenant's home cell."
@@ -14,7 +14,7 @@ resource "azurerm_api_management_api_operation" "analyze" {
   operation_id        = "analyze"
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = "Analyze document"
   method              = "POST"
   url_template        = "/documentModels/{modelId}/analyze"
@@ -41,7 +41,7 @@ resource "azurerm_api_management_api_operation" "result" {
   operation_id        = "result"
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   display_name        = "Get analyze result"
   method              = "GET"
   url_template        = "/results/{ticket}"
@@ -69,7 +69,7 @@ resource "azurerm_api_management_api_operation" "result" {
 resource "azurerm_api_management_api_policy" "di_v1" {
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   xml_content         = file("${local.policy_dir}/api-di-v1.xml")
 
   depends_on = [
@@ -81,7 +81,7 @@ resource "azurerm_api_management_api_policy" "di_v1" {
 resource "azurerm_api_management_api_operation_policy" "analyze" {
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   operation_id        = azurerm_api_management_api_operation.analyze.operation_id
   xml_content         = file("${local.policy_dir}/op-analyze.xml")
 
@@ -97,7 +97,7 @@ resource "azurerm_api_management_api_operation_policy" "analyze" {
 resource "azurerm_api_management_api_operation_policy" "result" {
   api_name            = azurerm_api_management_api.di_v1.name
   api_management_name = var.apim_name
-  resource_group_name = var.rg_name
+  resource_group_name = local.apim_rg_name
   operation_id        = azurerm_api_management_api_operation.result.operation_id
   xml_content         = file("${local.policy_dir}/op-result.xml")
 
@@ -114,7 +114,7 @@ resource "azurerm_api_management_api_diagnostic" "di_v1" {
   identifier               = "azuremonitor"
   api_name                 = azurerm_api_management_api.di_v1.name
   api_management_name      = var.apim_name
-  resource_group_name      = var.rg_name
+  resource_group_name      = local.apim_rg_name
   api_management_logger_id = var.apim_logger_id
   sampling_percentage      = 100
   always_log_errors        = true

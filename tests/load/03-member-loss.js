@@ -1,4 +1,5 @@
-// 3. Member loss: disable one member of a cell mid-run; traffic shifts within the trip window.
+// 3. Member loss: disable one member of the critical pool (3 members) mid-run; traffic
+// shifts to the other two within the trip window.
 //
 // At DISABLE_AT (default 5m) run, from a host with line-of-sight:
 //   ./disable-member.sh <resource-group> <di-account-name>
@@ -6,9 +7,9 @@
 // its breaker. Re-approve the connection after the test.
 //
 // Pass criteria: analyze 429 rate returns to ~0 within 30 s of the disable (breaker trip
-// 10 s + retry), and APIM GatewayLogs show retries landing on the other member
+// 10 s + retry), and APIM GatewayLogs show retries landing on the remaining members
 // (see queries.kql: retry-lands-elsewhere).
-// TENANT=<tenant in the cell> RATE=<its peak> k6 run 03-member-loss.js
+// TENANT=<tenant in the critical pool> RATE=<its peak> k6 run 03-member-loss.js
 import { submit, poll, tenantScenario } from './lib.js';
 
 export const options = {
