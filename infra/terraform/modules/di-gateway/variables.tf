@@ -131,7 +131,7 @@ variable "dns_zone_id" {
 }
 
 variable "apim_id" {
-  description = "Resource ID of the APIM instance (Premium v2, private)."
+  description = "Resource ID of the APIM instance (Standard v2 or Premium v2, private)."
   type        = string
 }
 

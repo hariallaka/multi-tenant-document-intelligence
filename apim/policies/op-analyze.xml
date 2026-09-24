@@ -43,7 +43,8 @@
     <rewrite-uri template="@(&quot;/documentModels/&quot; + (string)context.Variables[&quot;modelId&quot;] + &quot;:analyze&quot;)" copy-unmatched-params="true" />
 
     <!-- Capacity-based routing. Analyze calls are counted per pool per second in the
-         external cache (shared by every gateway unit). Below {{overflow-threshold-pct}}% of the
+         external Redis cache (shared by every gateway unit); prefer-external falls back to
+         APIM's built-in cache if no external cache is attached. Below {{overflow-threshold-pct}}% of the
          home pool's capacity, the home pool serves the request. At or above it, requests from
          overflow-enabled tenants are sent to the tenant's zone overflow pool instead of being
          rejected, while the overflow pool is itself below the threshold and the tenant is within
@@ -71,24 +72,24 @@
     <set-variable name="ovfKey" value="@(&quot;cap:overflow-&quot; + (string)context.Variables[&quot;zone&quot;] + &quot;:&quot; + (string)context.Variables[&quot;second&quot;])" />
     <set-variable name="tenantOvfKey" value="@(&quot;ovf:&quot; + (string)context.Variables[&quot;tenant&quot;] + &quot;:&quot; + (string)context.Variables[&quot;second&quot;])" />
 
-    <cache-lookup-value key="@((string)context.Variables[&quot;homeKey&quot;])" variable-name="homeCount" default-value="0" caching-type="external" />
+    <cache-lookup-value key="@((string)context.Variables[&quot;homeKey&quot;])" variable-name="homeCount" default-value="0" caching-type="prefer-external" />
     <set-variable name="spill" value="@((bool)context.Variables[&quot;overflow&quot;] &amp;&amp; (int)context.Variables[&quot;ovfLimit&quot;] &gt; 0 &amp;&amp; Convert.ToInt32(context.Variables[&quot;homeCount&quot;]) &gt;= (int)context.Variables[&quot;homeLimit&quot;])" />
     <choose>
       <when condition="@((bool)context.Variables[&quot;spill&quot;])">
-        <cache-lookup-value key="@((string)context.Variables[&quot;ovfKey&quot;])" variable-name="ovfCount" default-value="0" caching-type="external" />
-        <cache-lookup-value key="@((string)context.Variables[&quot;tenantOvfKey&quot;])" variable-name="tenantOvfCount" default-value="0" caching-type="external" />
+        <cache-lookup-value key="@((string)context.Variables[&quot;ovfKey&quot;])" variable-name="ovfCount" default-value="0" caching-type="prefer-external" />
+        <cache-lookup-value key="@((string)context.Variables[&quot;tenantOvfKey&quot;])" variable-name="tenantOvfCount" default-value="0" caching-type="prefer-external" />
         <set-variable name="spill" value="@(Convert.ToInt32(context.Variables[&quot;ovfCount&quot;]) &lt; (int)context.Variables[&quot;ovfLimit&quot;] &amp;&amp; Convert.ToInt32(context.Variables[&quot;tenantOvfCount&quot;]) &lt; (int)context.Variables[&quot;tenantOvfLimit&quot;])" />
       </when>
     </choose>
     <choose>
       <when condition="@((bool)context.Variables[&quot;spill&quot;])">
-        <cache-store-value key="@((string)context.Variables[&quot;ovfKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;ovfCount&quot;]) + 1).ToString())" duration="2" caching-type="external" />
-        <cache-store-value key="@((string)context.Variables[&quot;tenantOvfKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;tenantOvfCount&quot;]) + 1).ToString())" duration="2" caching-type="external" />
+        <cache-store-value key="@((string)context.Variables[&quot;ovfKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;ovfCount&quot;]) + 1).ToString())" duration="2" caching-type="prefer-external" />
+        <cache-store-value key="@((string)context.Variables[&quot;tenantOvfKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;tenantOvfCount&quot;]) + 1).ToString())" duration="2" caching-type="prefer-external" />
         <set-variable name="route" value="@((string)context.Variables[&quot;ovfPool&quot;])" />
         <set-variable name="altRoute" value="@((string)context.Variables[&quot;homePool&quot;])" />
       </when>
       <otherwise>
-        <cache-store-value key="@((string)context.Variables[&quot;homeKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;homeCount&quot;]) + 1).ToString())" duration="2" caching-type="external" />
+        <cache-store-value key="@((string)context.Variables[&quot;homeKey&quot;])" value="@((Convert.ToInt32(context.Variables[&quot;homeCount&quot;]) + 1).ToString())" duration="2" caching-type="prefer-external" />
         <set-variable name="route" value="@((string)context.Variables[&quot;homePool&quot;])" />
         <set-variable name="altRoute" value="@((bool)context.Variables[&quot;overflow&quot;] &amp;&amp; (int)context.Variables[&quot;ovfLimit&quot;] &gt; 0 ? (string)context.Variables[&quot;ovfPool&quot;] : (string)context.Variables[&quot;homePool&quot;])" />
       </otherwise>

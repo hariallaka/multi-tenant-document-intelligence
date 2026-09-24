@@ -37,8 +37,9 @@ module "platform" {
   name_prefix   = var.name_prefix
   unique_suffix = var.unique_suffix
 
-  # Existing APIM Premium v2 instance (not managed here).
+  # Existing APIM Standard v2 / Premium v2 instance (not managed here).
   apim_name                = var.apim_name
+  allowed_apim_skus        = var.allowed_apim_skus
   apim_resource_group_name = var.apim_resource_group_name
   apim_vnet_id             = var.apim_vnet_id
   require_private_apim     = var.require_private_apim

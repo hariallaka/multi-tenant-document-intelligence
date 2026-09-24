@@ -1,7 +1,14 @@
-# The APIM Premium v2 instance already exists and is owned outside this repo.
-# Terraform only reads it and adds APIs, backends, named values, the external
-# cache and diagnostics to it. The azapi read exposes the network settings that
-# the azurerm data source does not (publicNetworkAccess, virtualNetworkType).
+# The APIM instance (Standard v2 or Premium v2) already exists and is owned outside
+# this repo. Terraform only reads it and adds APIs, backends, named values, the
+# external cache and diagnostics to it. The azapi read exposes the network settings
+# that the azurerm data source does not (publicNetworkAccess, virtualNetworkType,
+# the VNet subnet).
+#
+# Private topologies the guardrails accept:
+#   Standard v2: inbound private endpoint + publicNetworkAccess = Disabled, and
+#                outbound VNet integration (virtualNetworkType = External, subnet
+#                delegated to Microsoft.Web/serverFarms) into apim_vnet_id.
+#   Premium v2:  the same, or VNet injection in Internal mode into apim_vnet_id.
 data "azapi_resource" "apim" {
   type      = "Microsoft.ApiManagement/service@2024-05-01"
   name      = var.apim_name
@@ -11,6 +18,7 @@ data "azapi_resource" "apim" {
     sku             = "sku.name"
     public_access   = "properties.publicNetworkAccess"
     vnet_type       = "properties.virtualNetworkType"
+    vnet_subnet_id  = "properties.virtualNetworkConfiguration.subnetResourceId"
     public_ip_id    = "properties.publicIpAddressId"
     gateway_url     = "properties.gatewayUrl"
     identity_type   = "identity.type"
@@ -20,14 +28,23 @@ data "azapi_resource" "apim" {
 }
 
 locals {
-  apim_id           = data.azapi_resource.apim.id
-  apim_sku          = try(data.azapi_resource.apim.output.sku, "")
-  apim_public       = try(data.azapi_resource.apim.output.public_access, "Enabled")
-  apim_vnet_type    = try(data.azapi_resource.apim.output.vnet_type, "None")
-  apim_public_ip_id = try(data.azapi_resource.apim.output.public_ip_id, null)
-  apim_identity     = try(data.azapi_resource.apim.output.identity_type, "None")
-  apim_principal_id = try(data.azapi_resource.apim.output.principal_id, null)
-  apim_gateway_host = trimprefix(try(data.azapi_resource.apim.output.gateway_url, "https://${var.apim_name}.azure-api.net"), "https://")
+  apim_id             = data.azapi_resource.apim.id
+  apim_sku            = try(data.azapi_resource.apim.output.sku, "")
+  apim_public         = try(data.azapi_resource.apim.output.public_access, "Enabled")
+  apim_vnet_type      = try(data.azapi_resource.apim.output.vnet_type, "None")
+  apim_vnet_subnet_id = try(data.azapi_resource.apim.output.vnet_subnet_id, null)
+  apim_public_ip_id   = try(data.azapi_resource.apim.output.public_ip_id, null)
+  apim_identity       = try(data.azapi_resource.apim.output.identity_type, "None")
+  apim_principal_id   = try(data.azapi_resource.apim.output.principal_id, null)
+  apim_gateway_host   = trimprefix(try(data.azapi_resource.apim.output.gateway_url, "https://${var.apim_name}.azure-api.net"), "https://")
+
+  # APIM reaches the DI, Key Vault and Redis private endpoints through this subnet
+  # (VNet integration on Standard v2, integration or injection on Premium v2).
+  apim_outbound_in_vnet = (
+    local.apim_vnet_type != "None" &&
+    local.apim_vnet_subnet_id != null &&
+    startswith(lower(coalesce(local.apim_vnet_subnet_id, "-")), "${lower(var.apim_vnet_id)}/subnets/")
+  )
 }
 
 # Fail the plan if the existing instance does not match what the design relies on.
@@ -36,13 +53,18 @@ resource "terraform_data" "apim_guardrails" {
 
   lifecycle {
     precondition {
-      condition     = local.apim_sku == "PremiumV2"
-      error_message = "APIM ${var.apim_name} must be on the Premium v2 tier (found ${local.apim_sku})."
+      condition     = contains(var.allowed_apim_skus, local.apim_sku)
+      error_message = "APIM ${var.apim_name} is on tier ${local.apim_sku}; allowed: ${join(", ", var.allowed_apim_skus)}. Backend pools, circuit breakers and VNet connectivity need Standard v2 or Premium v2."
     }
 
     precondition {
       condition     = !var.require_private_apim || ((local.apim_public == "Disabled" || local.apim_vnet_type == "Internal") && local.apim_public_ip_id == null)
-      error_message = "APIM ${var.apim_name} is reachable from the internet (publicNetworkAccess=${local.apim_public}, virtualNetworkType=${local.apim_vnet_type}). The gateway must be private: VNet injection in Internal mode, or public network access disabled with a private endpoint, and no public IP."
+      error_message = "APIM ${var.apim_name} is reachable from the internet (publicNetworkAccess=${local.apim_public}, virtualNetworkType=${local.apim_vnet_type}). The gateway must be private: an inbound private endpoint with public network access disabled (Standard v2 or Premium v2), or VNet injection in Internal mode (Premium v2), and no public IP."
+    }
+
+    precondition {
+      condition     = local.apim_outbound_in_vnet
+      error_message = "APIM ${var.apim_name} has no outbound VNet connectivity into apim_vnet_id (virtualNetworkType=${local.apim_vnet_type}, subnet=${coalesce(local.apim_vnet_subnet_id, "none")}). Enable VNet integration (Standard v2) or injection (Premium v2) into ${var.apim_vnet_id} so the gateway can reach the DI private endpoints."
     }
 
     precondition {

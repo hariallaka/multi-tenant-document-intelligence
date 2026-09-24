@@ -1,7 +1,8 @@
 # DI gateway: multi-tenant Document Intelligence behind APIM
 
 A shared Azure AI Document Intelligence (S0, API v4.0) service for internal workloads, fronted by
-an **existing, private Azure API Management Premium v2** instance. Neither APIM nor DI is reachable
+an **existing, private Azure API Management Standard v2** instance (Premium v2 also works; it isn't
+yet available in Australia East). Neither APIM nor DI is reachable
 from the internet. The design is in [`docs/design.md`](docs/design.md), and
 [`docs/HANDOFF.md`](docs/HANDOFF.md) is the original build brief. This README describes the
 deployment profile this repo implements, which narrows the design to two pools (see
@@ -12,7 +13,7 @@ deployment profile this repo implements, which narrows the design to two pools (
 ```
                  private network only (no public IP, no public endpoint)
 ┌──────────────┐   ┌───────────────────────────────────────────┐   ┌────────────────────────────────────┐
-│ internal app │──▶│ APIM Premium v2 (existing, VNet-injected)  │──▶│ pool-prod-general    2 × DI S0      │
+│ internal app │──▶│ APIM Standard v2 (existing, private)       │──▶│ pool-prod-general    2 × DI S0      │
 │ Entra token  │   │  api-di-v1.xml  auth, tenant → pool       │   │ pool-prod-critical   3 × DI S0      │
 └──────────────┘   │  op-analyze.xml limits, count pool load:  │   ├──── at ≥ 90% of pool capacity ─────┤
                    │    < 90%  → home pool                     │──▶│ pool-overflow-general   1 × DI S0   │
@@ -20,6 +21,7 @@ deployment profile this repo implements, which narrows the design to two pools (
                    │  op-result.xml  signed ticket → 1 member  │   └────────────────────────────────────┘
                    │  managed identity ─▶ DI (no keys)        │     each DI: public access off,
                    └───────────────────────────────────────────┘     local auth off, private endpoint
+   inbound: private endpoint, public access disabled · outbound: VNet integration
                         │ named values ─▶ Key Vault (PE)
                         │ external cache ─▶ Managed Redis (PE): per-pool, per-second counters
                         └ logs ─▶ Log Analytics
@@ -29,8 +31,8 @@ deployment profile this repo implements, which narrows the design to two pools (
 
 | Decision | This repo |
 | --- | --- |
-| APIM | **Existing Premium v2 instance**, read by Terraform and never created or reconfigured (only APIs, backends, named values, the external cache and a diagnostic setting are added to it) |
-| APIM exposure | **Private only.** The plan fails unless the instance is VNet-injected in Internal mode or has public network access disabled, and has no public IP (`require_private_apim`) |
+| APIM | **Existing Standard v2 instance** (Premium v2 also accepted), read by Terraform and never created or reconfigured (only APIs, backends, named values, the external cache and a diagnostic setting are added to it) |
+| APIM exposure | **Private only.** Inbound through a private endpoint with public network access disabled, and no public IP. Outbound through VNet integration into `apim_vnet_id`. The plan fails otherwise (`require_private_apim`) |
 | Pools | **general**: 2 DI resources. **critical**: 3 DI resources. They share nothing |
 | Overflow | **Active at 90%.** One overflow pool per zone (`pool-overflow-general`, `pool-overflow-critical`, 1 DI each). When a pool reaches 90% of its capacity, further requests go to its zone's overflow pool instead of being rejected |
 | DI exposure | Private endpoints only, `public_network_access_enabled = false`, `local_auth_enabled = false` |
@@ -99,7 +101,7 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 
 | Component | Terraform | Notes |
 | --- | --- | --- |
-| Existing APIM lookup and guardrails (Premium v2, private, managed identity) | `modules/platform/existing_apim.tf` | `azapi` read of `Microsoft.ApiManagement/service` |
+| Existing APIM lookup and guardrails (Standard v2 or Premium v2, private, VNet-integrated, managed identity) | `modules/platform/existing_apim.tf` | `azapi` read of `Microsoft.ApiManagement/service` |
 | Resource group for DI and supporting resources | `modules/platform/network.tf` | APIM stays in its own resource group |
 | PE subnet: an existing one, or a spoke VNet + PE subnet + NSG peered with the APIM VNet | `modules/platform/network.tf` | `existing_pe_subnet_id` switches between the two |
 | Private DNS zones for cognitiveservices, vaultcore and redis, linked to the APIM VNet | `modules/platform/dns.tf` | Or pass hub-owned zone IDs |
@@ -115,14 +117,21 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 
 ### Prerequisites on the existing APIM instance
 
-- **Tier:** Premium v2 (`sku.name = PremiumV2`), in the same subscription and region as `location`.
-- **Private:** VNet-injected in Internal mode, or public network access disabled with an inbound
-  private endpoint. No public IP.
+- **Tier:** Standard v2 (`sku.name = StandardV2`) or Premium v2, in the same subscription and
+  region as `location`. `allowed_apim_skus` controls which tiers are accepted.
+- **Private inbound:** an inbound private endpoint on the gateway, then public network access
+  set to Disabled (Azure only allows disabling it once a private endpoint exists). No public IP.
+  Clients resolve the gateway through a `privatelink.azure-api.net` zone owned by your network
+  team; this repo doesn't manage the inbound endpoint.
+- **Outbound VNet integration:** the instance is integrated with a subnet of `apim_vnet_id`
+  delegated to `Microsoft.Web/serverFarms`. This is how APIM reaches the DI, Key Vault and Redis
+  private endpoints. (On Premium v2, VNet injection in Internal mode also works.)
 - **Identity:** a system-assigned managed identity. Terraform grants it `Cognitive Services User`
   on each DI account and `Key Vault Secrets User` on the vault.
-- **Network:** `apim_vnet_id` is the VNet APIM is injected into. APIM must reach the PE subnet,
-  either because the subnet is in that VNet or through the peering Terraform creates. NSGs and
-  route tables on the APIM subnet must allow outbound 443 (DI, Key Vault) and 10000 (Redis) to it.
+- **Network:** `apim_vnet_id` is the VNet APIM integrates with. APIM must reach the PE subnet,
+  either because the subnet is in that VNet (not the delegated integration subnet itself) or
+  through the peering Terraform creates. NSGs and route tables on the integration subnet must
+  allow outbound 443 (DI, Key Vault) and 10000 (Redis) to it.
 - **DNS:** APIM must resolve `*.cognitiveservices.azure.com`, `*.vault.azure.net` and
   `*.redis.azure.net` to the private endpoints. Terraform links the zones it creates to the
   APIM VNet. If the hub owns the zones, it must link them.
@@ -171,8 +180,9 @@ placeholders marked `TODO`.
 
 ## Guardrails (plan fails)
 
-- **Existing APIM:** it is Premium v2, private (Internal injection or public access disabled,
-  and no public IP), and has a system-assigned identity.
+- **Existing APIM:** it is Standard v2 or Premium v2 (per `allowed_apim_skus`); private (public
+  access disabled, or Internal injection on Premium v2) with no public IP; VNet-integrated into
+  `apim_vnet_id`; and has a system-assigned identity.
 - Every tenant references an existing pool.
 - Overflow-enabled tenants have an overflow pool in their zone, and none are Restricted.
 - DI accounts per region, including `dedicated_di_count`, stay at or below 20.
@@ -193,7 +203,7 @@ checkov -d infra/terraform --framework terraform
 python3 -m pytest tests/policy
 ```
 
-The Terraform tests use mocked providers, including a mocked private Premium v2 instance, so
+The Terraform tests use mocked providers, including a mocked private Standard v2 instance, so
 they need no Azure access. Commit provider lock files from a machine with registry access:
 `terraform providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=windows_amd64`
 in each `envs/*` directory.
@@ -214,7 +224,8 @@ network: Terraform writes the bootstrap signing keys through Key Vault's private
 
 | Change | Why |
 | --- | --- |
-| Existing APIM Premium v2, read-only in Terraform | The instance already exists; the design assumed Premium or v2 |
+| Existing APIM **Standard v2**, read-only in Terraform | Premium v2 isn't yet available in Australia East. Standard v2 stays private through an inbound private endpoint and outbound VNet integration instead of VNet injection |
+| Overflow counters use `caching-type="prefer-external"` | Uses the Redis external cache, and falls back to APIM's built-in cache if none is attached |
 | Two pools (general 2, critical 3), each with its own overflow pool | Requested deployment profile |
 | Overflow triggered at 90% of pool capacity, not after the pool is exhausted | Requested: requests spill to overflow before throttling instead of being rejected. The design only used overflow on the final retry after 429s |
 | The per-tenant overflow cap is a share of overflow capacity per second (50%) | Replaces the design's fixed 30 calls / 10 s; it scales with the overflow pool's size |
@@ -233,14 +244,17 @@ Resolved:
 
 Still open (validate in nonprod before rollout):
 
-- [ ] **Premium v2 features:** confirm that backend pools, circuit breakers, `rate-limit-by-key`,
-  `quota-by-key`, the external cache and `authentication-managed-identity` behave on your
-  Premium v2 instance as the policies expect.
-- [ ] **Premium v2 network properties:** confirm how your instance reports its private mode
-  (`virtualNetworkType = Internal` for injection, or `publicNetworkAccess = Disabled` with a
-  private endpoint). The guardrail accepts either.
+- [ ] **Standard v2 features:** confirm that backend pools, circuit breakers, `rate-limit-by-key`,
+  `quota-by-key`, the external cache, `authentication-managed-identity` and Key Vault named values
+  behave on your Standard v2 instance as the policies expect.
+- [ ] **Standard v2 network properties:** confirm the instance reports `publicNetworkAccess =
+  Disabled` and a `virtualNetworkConfiguration.subnetResourceId` in `apim_vnet_id`. The guardrail
+  reads both.
 - [ ] Whether `HMACSHA256`, `Regex`, `Func` and `Convert.FromBase64String` are allowed in policy
-  expressions on Premium v2.
+  expressions on Standard v2.
+- [ ] **Standard v2 limits:** capacity scales to 10 units, and it has a lower SLA than Premium v2
+  with no zone redundancy or multi-region. Size units for peak gateway throughput. Every request
+  also makes 2–4 cache calls to Redis for the overflow counters, so keep Redis in the same region.
 - [ ] How a fully tripped pool surfaces: a 503 `context.Response`, or `on-error`. Adjust the
   Analyze retry condition and the API `on-error` source check to match.
 - [ ] Whether retries land on a different member (load test 3, `tests/load/queries.kql`).
@@ -251,8 +265,8 @@ Still open (validate in nonprod before rollout):
   to Entra auth if APIM supports it for Azure Managed Redis. The cache is required: it holds the
   counters that trigger overflow.
 - [ ] **Overflow routing:** load test 4 must show spill starting near 90% (`x-daas-pool` in the
-  logs), and APIM Premium v2 must accept `cache-lookup-value` with `default-value` against the
-  external cache. Check how far counters overshoot under your gateway unit count.
+  logs), and APIM Standard v2 must accept `cache-lookup-value` with `default-value` against the
+  external cache (with `prefer-external`, check Redis is actually used, not the built-in cache). Check how far counters overshoot under your gateway unit count.
 - [ ] Per-tier limits (standard 10/5 s, gold 30/5 s) and the 200,000/day quota are hard-coded in
   `op-analyze.xml`. They are the only gateway-side 429s left; set them from onboarding data.
 - [ ] Whether the 20-resource DI limit is per subscription per region, or per region only.

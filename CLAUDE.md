@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Shared, multi-tenant Azure AI Document Intelligence behind an existing, private APIM Premium v2
-instance. `docs/design.md` is the source of truth for policies and routing. The README's
-"Deployment profile" records where this repo narrows it: the APIM instance already exists,
+Shared, multi-tenant Azure AI Document Intelligence behind an existing, private APIM Standard v2
+instance (Premium v2 also accepted). `docs/design.md` is the source of truth for policies and routing. The README's
+"Deployment profile" records where this repo narrows it: the APIM instance already exists (Standard v2: inbound private endpoint + outbound VNet integration),
 there are two pools (general 2 DI, critical 3 DI), each with its own zone overflow pool, and
 requests spill to overflow at 90% of pool capacity instead of being rejected.
 
@@ -13,7 +13,8 @@ requests spill to overflow at 90% of pool capacity instead of being rejected.
 - No secrets in the repo. Signing keys are Key Vault references. Pipelines use WIF (OIDC).
 - The APIM instance itself is never created or reconfigured by Terraform (it only adds APIs, backends,
   named values, the external cache and a diagnostic setting). It is read in `modules/platform/existing_apim.tf`,
-  and the plan must fail unless it is Premium v2, private and without a public IP. Never add a public IP.
+  and the plan must fail unless it is Standard v2 or Premium v2, private (public access disabled or Internal
+  injection), without a public IP and VNet-integrated into `apim_vnet_id`. Never add a public IP.
 - Pools never share DI resources. Overflow is per zone (`pool-overflow-<zone>`); Restricted never overflows.
 - The gateway never returns 429 because of pool capacity: at `overflow-threshold-pct` it spills to overflow,
   and when both pools are busy it still forwards to the home pool. Only per-tenant contract limits reject.

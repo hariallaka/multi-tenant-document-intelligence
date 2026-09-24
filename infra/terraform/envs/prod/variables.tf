@@ -30,8 +30,14 @@ variable "tags" {
 }
 
 variable "apim_name" {
-  description = "Existing APIM Premium v2 instance."
+  description = "Existing APIM instance (Standard v2 or Premium v2)."
   type        = string
+}
+
+variable "allowed_apim_skus" {
+  description = "APIM tiers the gateway may run on."
+  type        = list(string)
+  default     = ["StandardV2", "PremiumV2"]
 }
 
 variable "apim_resource_group_name" {
@@ -40,7 +46,7 @@ variable "apim_resource_group_name" {
 }
 
 variable "apim_vnet_id" {
-  description = "VNet the APIM instance is injected into."
+  description = "VNet APIM sends outbound traffic through (VNet integration on Standard v2)."
   type        = string
 }
 

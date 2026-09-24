@@ -35,11 +35,11 @@ variable "tags" {
 }
 
 # ---------------------------------------------------------------------------
-# Existing APIM Premium v2 instance
+# Existing APIM instance (Standard v2 or Premium v2)
 # ---------------------------------------------------------------------------
 
 variable "apim_name" {
-  description = "Name of the existing APIM Premium v2 instance."
+  description = "Name of the existing APIM instance (Standard v2 or Premium v2)."
   type        = string
 }
 
@@ -48,13 +48,24 @@ variable "apim_resource_group_name" {
   type        = string
 }
 
+variable "allowed_apim_skus" {
+  description = "APIM tiers the gateway may run on. Both v2 tiers support backend pools, circuit breakers, VNet integration and inbound private endpoints."
+  type        = list(string)
+  default     = ["StandardV2", "PremiumV2"]
+
+  validation {
+    condition     = length(var.allowed_apim_skus) > 0 && alltrue([for s in var.allowed_apim_skus : contains(["StandardV2", "PremiumV2"], s)])
+    error_message = "allowed_apim_skus may only contain StandardV2 and PremiumV2."
+  }
+}
+
 variable "apim_vnet_id" {
-  description = "VNet the APIM instance is injected into (or integrated with). Private DNS zones are linked to it so APIM resolves the DI private endpoints."
+  description = "VNet APIM sends outbound traffic through: its VNet integration VNet (Standard v2) or its integration/injection VNet (Premium v2). Private DNS zones are linked to it so APIM resolves the DI private endpoints."
   type        = string
 }
 
 variable "require_private_apim" {
-  description = "Fail the plan unless the APIM instance is private (Internal VNet injection or public network access disabled) and has no public IP."
+  description = "Fail the plan unless the APIM instance is private (public network access disabled with an inbound private endpoint, or Internal VNet injection on Premium v2) and has no public IP."
   type        = bool
   default     = true
 }

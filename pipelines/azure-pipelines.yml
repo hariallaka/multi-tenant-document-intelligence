@@ -3,7 +3,7 @@
 # Service connections use Workload Identity Federation (no client secrets).
 # The agent pool must run inside the private network: Key Vault and Redis have no
 # public endpoint, and the bootstrap signing keys are written through Key Vault's
-# private endpoint. The APIM instance (Premium v2) already exists and is only read.
+# private endpoint. The APIM instance (Standard v2) already exists and is only read.
 
 trigger:
   branches:

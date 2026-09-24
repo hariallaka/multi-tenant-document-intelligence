@@ -1,4 +1,6 @@
-# Guardrails on the existing APIM instance. Providers are mocked.
+# Guardrails on the existing APIM instance. Providers are mocked; the default mock
+# is a private Standard v2 instance (inbound private endpoint, public access disabled,
+# outbound VNet integration into apim_vnet_id).
 #   cd infra/terraform/modules/platform && terraform init -backend=false && terraform test
 
 mock_provider "azurerm" {
@@ -16,13 +18,14 @@ mock_provider "azapi" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "PremiumV2"
-        public_access = "Disabled"
-        vnet_type     = "Internal"
-        public_ip_id  = null
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "SystemAssigned"
-        principal_id  = "00000000-0000-0000-0000-000000000002"
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
       }
     }
   }
@@ -40,7 +43,7 @@ variables {
   pe_subnet_prefix         = "10.0.0.0/27"
 }
 
-run "private_premium_v2_passes" {
+run "private_standard_v2_passes" {
   command = plan
 
   assert {
@@ -56,6 +59,27 @@ run "private_premium_v2_passes" {
   assert {
     condition     = length([for k, l in azurerm_private_dns_zone_virtual_network_link.this : k if endswith(k, "-apim") && l.virtual_network_id == var.apim_vnet_id]) == 3
     error_message = "Every created private DNS zone must be linked to the APIM VNet."
+  }
+}
+
+run "injected_premium_v2_passes" {
+  command = plan
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      output = {
+        sku            = "PremiumV2"
+        public_access  = "Enabled"
+        vnet_type      = "Internal"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
+      }
+    }
   }
 }
 
@@ -77,21 +101,34 @@ run "existing_pe_subnet_skips_spoke" {
   }
 }
 
-run "public_apim_rejected" {
+run "standard_v2_only_allowed_when_listed" {
   command = plan
+
+  variables {
+    allowed_apim_skus = ["PremiumV2"]
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "public_access_rejected" {
+  command = plan
+
+  # Standard v2 with its public gateway still enabled.
 
   override_data {
     target = data.azapi_resource.apim
     values = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "PremiumV2"
-        public_access = "Enabled"
-        vnet_type     = "External"
-        public_ip_id  = null
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "SystemAssigned"
-        principal_id  = "00000000-0000-0000-0000-000000000002"
+        sku            = "StandardV2"
+        public_access  = "Enabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
       }
     }
   }
@@ -107,13 +144,85 @@ run "public_ip_rejected" {
     values = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "PremiumV2"
-        public_access = "Disabled"
-        vnet_type     = "Internal"
-        public_ip_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/pip"
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "SystemAssigned"
-        principal_id  = "00000000-0000-0000-0000-000000000002"
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/pip"
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
+      }
+    }
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "no_vnet_integration_rejected" {
+  command = plan
+
+  # Private inbound, but no outbound VNet integration: APIM could not reach the DI private endpoints.
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      output = {
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "None"
+        vnet_subnet_id = null
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
+      }
+    }
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "vnet_integration_into_other_vnet_rejected" {
+  command = plan
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      output = {
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-other/subnets/snet"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
+      }
+    }
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "basic_v2_rejected" {
+  command = plan
+
+  override_data {
+    target = data.azapi_resource.apim
+    values = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      output = {
+        sku            = "BasicV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
       }
     }
   }
@@ -129,13 +238,14 @@ run "classic_premium_rejected" {
     values = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "Premium"
-        public_access = "Disabled"
-        vnet_type     = "Internal"
-        public_ip_id  = null
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "SystemAssigned"
-        principal_id  = "00000000-0000-0000-0000-000000000002"
+        sku            = "Premium"
+        public_access  = "Disabled"
+        vnet_type      = "Internal"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
       }
     }
   }
@@ -151,13 +261,14 @@ run "missing_managed_identity_rejected" {
     values = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "PremiumV2"
-        public_access = "Disabled"
-        vnet_type     = "Internal"
-        public_ip_id  = null
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "None"
-        principal_id  = null
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-apim/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "None"
+        principal_id   = null
       }
     }
   }

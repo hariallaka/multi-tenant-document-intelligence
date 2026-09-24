@@ -5,14 +5,21 @@ location        = "australiaeast" # must match the APIM instance's region
 name_prefix     = "daas-di-np"
 unique_suffix   = "x7n"
 
-# Existing APIM Premium v2 instance. It must be private (VNet injection in Internal
-# mode, or public network access disabled) with no public IP; the plan fails otherwise.
+# Existing APIM Standard v2 instance (Premium v2 is not yet available in australiaeast).
+# It must be private, or the plan fails:
+#   inbound:  a private endpoint on the gateway, publicNetworkAccess = Disabled, no public IP
+#   outbound: VNet integration into apim_vnet_id (subnet delegated to Microsoft.Web/serverFarms),
+#             so APIM reaches the DI, Key Vault and Redis private endpoints.
+# To move to Premium v2 later, point apim_name at the new instance; nothing else changes.
+allowed_apim_skus = ["StandardV2", "PremiumV2"]
+
 apim_name                = "apim-daas-np"                                                                                                                              # TODO: existing instance
 apim_resource_group_name = "rg-apim-np"                                                                                                                                # TODO
-apim_vnet_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np" # TODO
+apim_vnet_id             = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np" # TODO: APIM VNet integration VNet
 
-# Private endpoints for DI, Key Vault and Redis. Either reuse a subnet that APIM can
-# reach (set existing_pe_subnet_id), or let Terraform create a spoke peered to the APIM VNet.
+# Private endpoints for DI, Key Vault and Redis. Either reuse a subnet that APIM can reach
+# through its VNet integration (set existing_pe_subnet_id; not the delegated integration
+# subnet itself), or let Terraform create a spoke peered to the APIM VNet.
 # existing_pe_subnet_id = "/subscriptions/.../virtualNetworks/vnet-apim-np/subnets/snet-pe"
 vnet_address_space = ["10.61.0.0/26"]
 pe_subnet_prefix   = "10.61.0.0/27"

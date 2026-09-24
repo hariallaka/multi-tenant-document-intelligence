@@ -1,6 +1,7 @@
 # Plans this environment's committed tfvars against mocked providers, so the
 # DeployEz config is checked against every guardrail without Azure access.
-# The existing APIM instance is mocked as a private Premium v2 instance.
+# The existing APIM instance is mocked as a private Standard v2 instance
+# (inbound private endpoint, public access disabled, outbound VNet integration).
 #   terraform init -backend=false && terraform test
 
 mock_provider "azurerm" {
@@ -25,13 +26,14 @@ mock_provider "azapi" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
       output = {
-        sku           = "PremiumV2"
-        public_access = "Disabled"
-        vnet_type     = "Internal"
-        public_ip_id  = null
-        gateway_url   = "https://apim.azure-api.net"
-        identity_type = "SystemAssigned"
-        principal_id  = "00000000-0000-0000-0000-000000000002"
+        sku            = "StandardV2"
+        public_access  = "Disabled"
+        vnet_type      = "External"
+        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np/subnets/snet-apim-integration"
+        public_ip_id   = null
+        gateway_url    = "https://apim.azure-api.net"
+        identity_type  = "SystemAssigned"
+        principal_id   = "00000000-0000-0000-0000-000000000002"
       }
     }
   }
