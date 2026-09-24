@@ -20,7 +20,9 @@ requests spill to overflow at 90% of pool capacity instead of being rejected.
   and when both pools are busy it still forwards to the home pool. Only per-tenant contract limits reject.
   The routing port in `tests/policy/routing.py` must match `op-analyze.xml`.
 - Overflow counters use `caching-type="external"` (the Azure Cache for Redis external cache), never the
-  built-in cache. APIM, Redis and DI must be in the same region (guardrail).
+  built-in cache. APIM, Redis and DI must be in the same region (guardrail). Azure Managed Redis can't be used.
+- Required: Entra ID auth from APIM to Redis. APIM's external cache only takes a connection string, so it
+  still uses an access key: an open decision recorded in the README ("Redis authentication").
 - APIM backends and pools use `azapi_resource` pinned to `Microsoft.ApiManagement/service/backends@2024-05-01`
   (`local.apim_backends_type`). Provider versions are pinned in `envs/*/main.tf`.
 - The Result operation targets a single backend: never a pool, never a retry.

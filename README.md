@@ -36,6 +36,8 @@ deployment profile this repo implements, which narrows the design to two pools (
 | Pools | **general**: 2 DI resources. **critical**: 3 DI resources. They share nothing |
 | Overflow | **Active at 90%.** One overflow pool per zone (`pool-overflow-general`, `pool-overflow-critical`, 1 DI each). When a pool reaches 90% of its capacity, further requests go to its zone's overflow pool instead of being rejected |
 | DI exposure | Private endpoints only, `public_network_access_enabled = false`, `local_auth_enabled = false` |
+| Authentication | APIM authenticates to DI and Key Vault with its managed identity: no DI keys and no secrets in the repo. **Exception (open decision):** APIM authenticates to Redis with an access key; see [Redis authentication](#redis-authentication-open-decision) |
+| Overflow counters | **Azure Cache for Redis** (Azure Managed Redis can't be used here), private endpoint only, same region as APIM and DI. **Requirement: Entra ID authentication**, not yet met |
 
 ### Overflow at 90% capacity
 
@@ -91,12 +93,32 @@ Redis holds the per-pool, per-second counters that trigger overflow. The policy 
 | TLS | Minimum TLS 1.2 |
 | Load | About 4 operations per Analyze call. At the gateway's full capacity (~100 calls/s) that's ~400 ops/s, well within Standard C1 |
 | Data | Counters only, with a 2 s TTL. Nothing persistent; losing Redis loses nothing but the current second's counts |
-| Auth | Access key in the APIM connection string (sensitive in Terraform, never in the repo). If you regenerate the Redis keys, re-run the pipeline so APIM gets the new key |
+| Auth | **Today:** access key in the APIM connection string (sensitive in Terraform, never in the repo). If you regenerate the Redis keys, re-run the pipeline so APIM gets the new key. **Required:** Entra ID; see below |
 
 **If Redis is unavailable,** counter reads come back empty, so every pool looks below 90% and
 nothing spills. Requests still go to the home pools, and the circuit breakers and retries still
 apply. Overflow resumes when Redis recovers. Confirm in nonprod that a Redis outage produces cache
 misses rather than failed requests on your tier (open verification point below).
+
+### Redis authentication (open decision)
+
+**Requirement:** APIM should authenticate to Azure Cache for Redis with Microsoft Entra ID (its
+managed identity), not an access key.
+
+**Blocker:** APIM's external cache (`Microsoft.ApiManagement/service/caches`) accepts only a
+`connectionString`. Its ARM schema from 2022 through `2025-09-01-preview` has no identity or
+auth-type setting, so APIM can't present an Entra token to Redis today. Entra auth can be turned
+on for the cache (for other clients), but disabling access keys would cut APIM off.
+
+| Option | Result | Trade-off |
+| --- | --- | --- |
+| **A. Entra on for the cache; APIM alone uses the access key** | Redis stays; any other client uses Entra. The key would be read at deploy time and written to APIM without being stored in Terraform state | One access key remains, used only by APIM |
+| **B. No Redis: counters in APIM's built-in cache** | No keys anywhere; nothing to run | Relies on the built-in cache being shared across gateway units; load test 4 must confirm spill starts near 90% |
+| **C. Entra only, access keys disabled** | Meets "Entra only" on paper | APIM can't connect, so overflow at 90% stops working |
+
+**Current state of the code:** access-key connection (the starting point for option A). If
+Microsoft adds managed-identity auth to APIM's external cache, switch to it and set
+`access_keys_authentication_enabled = false` on the cache.
 
 ### Other controls that still apply
 
@@ -253,7 +275,7 @@ network: Terraform writes the bootstrap signing keys through Key Vault's private
 | `tenant-cell-map` and `di-host-map` stored as base64(JSON) | Raw JSON quotes placed inside `value="{{...}}"` attributes would break the policy XML |
 | Guardrails are `precondition`s, not `check` blocks | `check` blocks only warn |
 | `di_name_suffix` on DI account names and subdomains | DI subdomains are globally unique. Backend keys stay the bare member names |
-| Azure Cache for Redis (not Azure Managed Redis) | Required by your platform standards. Microsoft has announced its retirement (2028); confirm new caches can still be created in your subscription |
+| Azure Cache for Redis (not Azure Managed Redis) | Azure Managed Redis can't be used in this environment. Microsoft has announced Azure Cache for Redis's retirement (2028); confirm new caches can still be created in your subscription |
 
 ## Verification points
 
@@ -282,8 +304,8 @@ Still open (validate in nonprod before rollout):
   diagnostic for per-tenant logging.
 - [ ] **External cache authentication:** APIM connects to Redis with a connection string that
   contains an access key. The key lives in Terraform state and APIM, never in the repo. Switch
-  to Entra auth if APIM's external cache gains managed-identity support. Its ARM schema (through
-  2025-09-01-preview) only has `connectionString`, so today APIM needs the access key. **Open decision.**
+  to Entra auth if APIM's external cache gains managed-identity support. **Open decision:** see
+  [Redis authentication](#redis-authentication-open-decision).
 - [ ] **Redis outage behaviour:** confirm what APIM does on your tier when the external cache
   is unreachable (cache miss or policy error), and that Analyze keeps working (see
   [Redis](#redis-external-cache)).
@@ -301,6 +323,7 @@ Still open (validate in nonprod before rollout):
 
 - Batch dispatcher (AKS, Service Bus, Redis token buckets): [`dispatcher/README.md`](dispatcher/README.md)
 - Custom-model copy pipeline and replication gate: [`scripts/model-copy/README.md`](scripts/model-copy/README.md).
-  Custom models must exist on **every** member of a tenant's pool, or failover within the pool fails.
+  Custom models must exist on **every** member of a tenant's pool **and** its zone's overflow pool,
+  or a request that retries or spills to another member fails.
 - Alert rules (429 rate per DI resource, breaker trips, pool saturation). The logs are in place;
   the alert rules are not.
