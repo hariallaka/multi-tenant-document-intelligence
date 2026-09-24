@@ -75,9 +75,9 @@ def test_capacity_routing_matches_python_port():
     # Never rejects on pool capacity: no return-response between routing and set-backend-service.
     routing = analyze[analyze.index("Capacity-based routing"):analyze.index("</inbound>")]
     assert "return-response" not in routing
-    # Counters live in the shared external cache (built-in cache as fallback).
-    assert routing.count('caching-type="prefer-external"') == 6
-    assert 'caching-type="external"' not in routing
+    # Counters live in the shared external Redis cache, never APIM's built-in cache.
+    assert routing.count('caching-type="external"') == 6
+    assert "prefer-external" not in routing and 'caching-type="internal"' not in routing
 
 
 def test_capacity_map_keys_match_terraform():

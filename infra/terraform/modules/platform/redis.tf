@@ -1,6 +1,8 @@
 # Azure Managed Redis as the APIM external cache. Required: the Analyze policy keeps
 # per-pool, per-second call counters here (cache-lookup-value / cache-store-value,
-# external) and spills to the zone overflow pool at the overflow threshold.
+# caching-type="external") and spills to the zone overflow pool at the threshold.
+# APIM reaches it over its VNet integration through the private endpoint (TLS, port
+# 10000). EnterpriseCluster presents one endpoint, which APIM's cache client needs.
 resource "azurerm_managed_redis" "this" {
   name                      = local.redis_name
   location                  = var.location
@@ -48,5 +50,11 @@ resource "azurerm_api_management_redis_cache" "this" {
   redis_cache_id    = azurerm_managed_redis.this.id
   connection_string = "${azurerm_managed_redis.this.hostname}:${azurerm_managed_redis.this.default_database[0].port},password=${azurerm_managed_redis.this.default_database[0].primary_access_key},ssl=True,abortConnect=False"
 
-  depends_on = [azurerm_private_endpoint.redis, terraform_data.apim_guardrails]
+  # APIM connects as soon as the cache is registered, so the private endpoint and the
+  # privatelink.redis.azure.net link to the APIM VNet must exist first.
+  depends_on = [
+    azurerm_private_endpoint.redis,
+    azurerm_private_dns_zone_virtual_network_link.this,
+    terraform_data.apim_guardrails,
+  ]
 }

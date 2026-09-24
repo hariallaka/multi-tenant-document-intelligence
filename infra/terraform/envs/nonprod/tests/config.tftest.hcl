@@ -24,7 +24,8 @@ mock_provider "azurerm" {
 mock_provider "azapi" {
   mock_data "azapi_resource" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"

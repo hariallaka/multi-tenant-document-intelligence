@@ -16,7 +16,8 @@ mock_provider "azurerm" {
 mock_provider "azapi" {
   mock_data "azapi_resource" {
     defaults = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"
@@ -68,7 +69,8 @@ run "injected_premium_v2_passes" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "PremiumV2"
         public_access  = "Enabled"
@@ -111,6 +113,35 @@ run "standard_v2_only_allowed_when_listed" {
   expect_failures = [terraform_data.apim_guardrails]
 }
 
+run "apim_in_other_region_rejected" {
+  command = plan
+
+  variables {
+    location = "australiasoutheast"
+  }
+
+  expect_failures = [terraform_data.apim_guardrails]
+}
+
+run "redis_waits_for_dns_and_uses_private_endpoint" {
+  command = plan
+
+  assert {
+    condition     = azurerm_managed_redis.this.public_network_access == "Disabled" && azurerm_private_endpoint.redis.private_service_connection[0].subresource_names[0] == "redisEnterprise"
+    error_message = "Redis must be private and reached through its private endpoint."
+  }
+
+  assert {
+    condition     = azurerm_managed_redis.this.default_database[0].clustering_policy == "EnterpriseCluster"
+    error_message = "APIM's cache client needs the single-endpoint EnterpriseCluster policy."
+  }
+
+  assert {
+    condition     = contains(keys(azurerm_private_dns_zone_virtual_network_link.this), "redis-apim")
+    error_message = "The Redis private DNS zone must be linked to the APIM VNet."
+  }
+}
+
 run "public_access_rejected" {
   command = plan
 
@@ -119,7 +150,8 @@ run "public_access_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Enabled"
@@ -142,7 +174,8 @@ run "public_ip_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"
@@ -167,7 +200,8 @@ run "no_vnet_integration_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"
@@ -190,7 +224,8 @@ run "vnet_integration_into_other_vnet_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"
@@ -213,7 +248,8 @@ run "basic_v2_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "BasicV2"
         public_access  = "Disabled"
@@ -236,7 +272,8 @@ run "classic_premium_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "Premium"
         public_access  = "Disabled"
@@ -259,7 +296,8 @@ run "missing_managed_identity_rejected" {
   override_data {
     target = data.azapi_resource.apim
     values = {
-      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+      location = "Australia East"
       output = {
         sku            = "StandardV2"
         public_access  = "Disabled"

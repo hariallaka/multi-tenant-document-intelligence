@@ -36,6 +36,7 @@ locals {
   apim_public_ip_id   = try(data.azapi_resource.apim.output.public_ip_id, null)
   apim_identity       = try(data.azapi_resource.apim.output.identity_type, "None")
   apim_principal_id   = try(data.azapi_resource.apim.output.principal_id, null)
+  apim_location       = lower(replace(try(data.azapi_resource.apim.location, ""), " ", ""))
   apim_gateway_host   = trimprefix(try(data.azapi_resource.apim.output.gateway_url, "https://${var.apim_name}.azure-api.net"), "https://")
 
   # APIM reaches the DI, Key Vault and Redis private endpoints through this subnet
@@ -65,6 +66,13 @@ resource "terraform_data" "apim_guardrails" {
     precondition {
       condition     = local.apim_outbound_in_vnet
       error_message = "APIM ${var.apim_name} has no outbound VNet connectivity into apim_vnet_id (virtualNetworkType=${local.apim_vnet_type}, subnet=${coalesce(local.apim_vnet_subnet_id, "none")}). Enable VNet integration (Standard v2) or injection (Premium v2) into ${var.apim_vnet_id} so the gateway can reach the DI private endpoints."
+    }
+
+    # Every Analyze call makes 2-4 round trips to the Redis counters, so APIM, Redis and
+    # DI must share a region.
+    precondition {
+      condition     = local.apim_location == lower(replace(var.location, " ", ""))
+      error_message = "APIM ${var.apim_name} is in ${local.apim_location}, but location is ${var.location}. Deploy Redis and DI in the APIM instance's region."
     }
 
     precondition {

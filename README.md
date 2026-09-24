@@ -77,6 +77,27 @@ The counters are approximate. Increments aren't atomic, so under heavy concurren
 briefly go a little over 90% before the spill starts. The 10% headroom and the circuit breakers
 absorb this.
 
+### Redis (external cache)
+
+Redis holds the per-pool, per-second counters that trigger overflow. The policy uses
+`caching-type="external"`, so the counters always live in Redis and never in APIM's built-in cache.
+
+| Item | Setting |
+| --- | --- |
+| Service | Azure Managed Redis (`modules/platform/redis.tf`), registered as the APIM external cache |
+| Network | Public access disabled, private endpoint in the PE subnet. APIM reaches it over VNet integration on TLS port 10000; the integration subnet's NSG must allow that outbound |
+| DNS | `privatelink.redis.azure.net` linked to the APIM VNet. The cache is registered only after the link exists |
+| Region | Same as APIM and DI (plan fails otherwise). Each Analyze call makes 2–4 Redis round trips |
+| Clustering | `EnterpriseCluster`: one endpoint, which APIM's cache client needs |
+| Load | About 4 operations per Analyze call. At the gateway's full capacity (~100 calls/s) that's ~400 ops/s, well within `Balanced_B0` |
+| Data | Counters only, with a 2 s TTL. Nothing persistent; losing Redis loses nothing but the current second's counts |
+| Auth | Access key in the APIM connection string (sensitive in Terraform, never in the repo). If you regenerate the Redis keys, re-run the pipeline so APIM gets the new key |
+
+**If Redis is unavailable,** counter reads come back empty, so every pool looks below 90% and
+nothing spills. Requests still go to the home pools, and the circuit breakers and retries still
+apply. Overflow resumes when Redis recovers. Confirm in nonprod that a Redis outage produces cache
+misses rather than failed requests on your tier (open verification point below).
+
 ### Other controls that still apply
 
 1. **Per-tenant contract limits.** `rate-limit-by-key` on the caller's Entra client ID (standard:
@@ -225,7 +246,6 @@ network: Terraform writes the bootstrap signing keys through Key Vault's private
 | Change | Why |
 | --- | --- |
 | Existing APIM **Standard v2**, read-only in Terraform | Premium v2 isn't yet available in Australia East. Standard v2 stays private through an inbound private endpoint and outbound VNet integration instead of VNet injection |
-| Overflow counters use `caching-type="prefer-external"` | Uses the Redis external cache, and falls back to APIM's built-in cache if none is attached |
 | Two pools (general 2, critical 3), each with its own overflow pool | Requested deployment profile |
 | Overflow triggered at 90% of pool capacity, not after the pool is exhausted | Requested: requests spill to overflow before throttling instead of being rejected. The design only used overflow on the final retry after 429s |
 | The per-tenant overflow cap is a share of overflow capacity per second (50%) | Replaces the design's fixed 30 calls / 10 s; it scales with the overflow pool's size |
@@ -262,11 +282,13 @@ Still open (validate in nonprod before rollout):
   diagnostic for per-tenant logging.
 - [ ] **External cache authentication:** APIM connects to Redis with a connection string that
   contains an access key. The key lives in Terraform state and APIM, never in the repo. Switch
-  to Entra auth if APIM supports it for Azure Managed Redis. The cache is required: it holds the
-  counters that trigger overflow.
+  to Entra auth if APIM supports it for Azure Managed Redis.
+- [ ] **Redis outage behaviour:** confirm what APIM does on your tier when the external cache
+  is unreachable (cache miss or policy error), and that Analyze keeps working (see
+  [Redis](#redis-external-cache)).
 - [ ] **Overflow routing:** load test 4 must show spill starting near 90% (`x-daas-pool` in the
   logs), and APIM Standard v2 must accept `cache-lookup-value` with `default-value` against the
-  external cache (with `prefer-external`, check Redis is actually used, not the built-in cache). Check how far counters overshoot under your gateway unit count.
+  external cache. Check how far counters overshoot under your gateway unit count.
 - [ ] Per-tier limits (standard 10/5 s, gold 30/5 s) and the 200,000/day quota are hard-coded in
   `op-analyze.xml`. They are the only gateway-side 429s left; set them from onboarding data.
 - [ ] Whether the 20-resource DI limit is per subscription per region, or per region only.
