@@ -50,7 +50,7 @@ resource "azurerm_network_security_group" "pe" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_ranges    = ["443", "10000"]
+    destination_port_ranges    = ["443", "6380"]
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = var.pe_subnet_prefix
   }

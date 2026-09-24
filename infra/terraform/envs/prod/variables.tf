@@ -93,9 +93,21 @@ variable "existing_private_dns_zone_ids" {
 }
 
 variable "redis_sku_name" {
-  description = "Azure Managed Redis SKU."
+  description = "Azure Cache for Redis tier (Standard or Premium)."
   type        = string
-  default     = "Balanced_B1"
+  default     = "Standard"
+}
+
+variable "redis_capacity" {
+  description = "Azure Cache for Redis size (C0-C6 Standard, P1-P5 Premium)."
+  type        = number
+  default     = 1
+}
+
+variable "redis_zones" {
+  description = "Availability zones for a Premium cache."
+  type        = list(string)
+  default     = []
 }
 
 variable "entra_tenant_id" {

@@ -7,7 +7,7 @@ locals {
   private_dns_zones = {
     cognitiveservices = "privatelink.cognitiveservices.azure.com"
     vaultcore         = "privatelink.vaultcore.azure.net"
-    redis             = "privatelink.redis.azure.net"
+    redis             = "privatelink.redis.cache.windows.net"
   }
 
   zones_to_create = { for k, z in local.private_dns_zones : k => z if !contains(keys(var.existing_private_dns_zone_ids), k) }
@@ -25,6 +25,6 @@ locals {
   )
 
   key_vault_name  = substr("kv-${replace(var.name_prefix, "-", "")}${var.unique_suffix}", 0, 24)
-  redis_name      = "amr-${var.name_prefix}-${var.unique_suffix}"
+  redis_name      = "redis-${var.name_prefix}-${var.unique_suffix}"
   signing_secrets = ["result-signing-key", "result-signing-key-prev"]
 }

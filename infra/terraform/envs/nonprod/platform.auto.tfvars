@@ -29,7 +29,10 @@ pe_subnet_prefix   = "10.61.0.0/27"
 #   cognitiveservices = "/subscriptions/<hub>/resourceGroups/<rg>/providers/Microsoft.Network/privateDnsZones/privatelink.cognitiveservices.azure.com"
 # }
 
-redis_sku_name = "Balanced_B0"
+# Azure Cache for Redis: the APIM external cache holding the overflow counters.
+# Standard C1: primary + replica with an SLA. Use Premium (P1) with redis_zones for zone redundancy.
+redis_sku_name = "Standard"
+redis_capacity = 1
 
 entra_tenant_id   = "00000000-0000-0000-0000-000000000000"
 gateway_audience  = "api://di-gateway-nonprod"

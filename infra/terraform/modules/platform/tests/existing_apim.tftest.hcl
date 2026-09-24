@@ -127,19 +127,48 @@ run "redis_waits_for_dns_and_uses_private_endpoint" {
   command = plan
 
   assert {
-    condition     = azurerm_managed_redis.this.public_network_access == "Disabled" && azurerm_private_endpoint.redis.private_service_connection[0].subresource_names[0] == "redisEnterprise"
+    condition     = azurerm_redis_cache.this.public_network_access_enabled == false && azurerm_private_endpoint.redis.private_service_connection[0].subresource_names[0] == "redisCache"
     error_message = "Redis must be private and reached through its private endpoint."
   }
 
   assert {
-    condition     = azurerm_managed_redis.this.default_database[0].clustering_policy == "EnterpriseCluster"
-    error_message = "APIM's cache client needs the single-endpoint EnterpriseCluster policy."
+    condition     = azurerm_redis_cache.this.sku_name == "Standard" && azurerm_redis_cache.this.family == "C" && azurerm_redis_cache.this.non_ssl_port_enabled == false && azurerm_redis_cache.this.minimum_tls_version == "1.2"
+    error_message = "Azure Cache for Redis must be Standard C by default, TLS 1.2 only, with the non-TLS port closed."
+  }
+
+  assert {
+    condition     = azurerm_private_dns_zone.this["redis"].name == "privatelink.redis.cache.windows.net"
+    error_message = "Azure Cache for Redis resolves through privatelink.redis.cache.windows.net."
   }
 
   assert {
     condition     = contains(keys(azurerm_private_dns_zone_virtual_network_link.this), "redis-apim")
     error_message = "The Redis private DNS zone must be linked to the APIM VNet."
   }
+}
+
+run "premium_redis_gets_zones" {
+  command = plan
+
+  variables {
+    redis_sku_name = "Premium"
+    redis_zones    = ["1", "2"]
+  }
+
+  assert {
+    condition     = azurerm_redis_cache.this.family == "P" && length(azurerm_redis_cache.this.zones) == 2
+    error_message = "A Premium cache uses family P and the requested zones."
+  }
+}
+
+run "basic_redis_rejected" {
+  command = plan
+
+  variables {
+    redis_sku_name = "Basic"
+  }
+
+  expect_failures = [var.redis_sku_name]
 }
 
 run "public_access_rejected" {

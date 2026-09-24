@@ -126,9 +126,31 @@ variable "existing_private_dns_zone_ids" {
 # ---------------------------------------------------------------------------
 
 variable "redis_sku_name" {
-  description = "Azure Managed Redis SKU."
+  description = "Azure Cache for Redis tier. Standard (replicated, SLA) or Premium (adds zone redundancy). Basic has no replica or SLA and is not allowed."
   type        = string
-  default     = "Balanced_B1"
+  default     = "Standard"
+
+  validation {
+    condition     = contains(["Standard", "Premium"], var.redis_sku_name)
+    error_message = "redis_sku_name must be Standard or Premium."
+  }
+}
+
+variable "redis_capacity" {
+  description = "Cache size within the tier: C0-C6 for Standard, P1-P5 for Premium. The counters need very little memory; size for connections and throughput."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.redis_capacity >= 0 && var.redis_capacity <= 6 && floor(var.redis_capacity) == var.redis_capacity
+    error_message = "redis_capacity must be a whole number between 0 and 6."
+  }
+}
+
+variable "redis_zones" {
+  description = "Availability zones for a Premium cache. Ignored for Standard."
+  type        = list(string)
+  default     = []
 }
 
 # ---------------------------------------------------------------------------

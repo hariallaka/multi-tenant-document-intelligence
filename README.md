@@ -23,7 +23,7 @@ deployment profile this repo implements, which narrows the design to two pools (
                    └───────────────────────────────────────────┘     local auth off, private endpoint
    inbound: private endpoint, public access disabled · outbound: VNet integration
                         │ named values ─▶ Key Vault (PE)
-                        │ external cache ─▶ Managed Redis (PE): per-pool, per-second counters
+                        │ external cache ─▶ Azure Cache for Redis (PE): per-pool, per-second counters
                         └ logs ─▶ Log Analytics
 ```
 
@@ -84,12 +84,12 @@ Redis holds the per-pool, per-second counters that trigger overflow. The policy 
 
 | Item | Setting |
 | --- | --- |
-| Service | Azure Managed Redis (`modules/platform/redis.tf`), registered as the APIM external cache |
-| Network | Public access disabled, private endpoint in the PE subnet. APIM reaches it over VNet integration on TLS port 10000; the integration subnet's NSG must allow that outbound |
-| DNS | `privatelink.redis.azure.net` linked to the APIM VNet. The cache is registered only after the link exists |
+| Service | Azure Cache for Redis, Standard C1 by default (`modules/platform/redis.tf`), registered as the APIM external cache. Premium with `redis_zones` for zone redundancy |
+| Network | Public access disabled, private endpoint in the PE subnet. APIM reaches it over VNet integration on TLS port 6380 (the non-TLS port is closed); the integration subnet's NSG must allow that outbound |
+| DNS | `privatelink.redis.cache.windows.net` linked to the APIM VNet. The cache is registered only after the link exists |
 | Region | Same as APIM and DI (plan fails otherwise). Each Analyze call makes 2–4 Redis round trips |
-| Clustering | `EnterpriseCluster`: one endpoint, which APIM's cache client needs |
-| Load | About 4 operations per Analyze call. At the gateway's full capacity (~100 calls/s) that's ~400 ops/s, well within `Balanced_B0` |
+| TLS | Minimum TLS 1.2 |
+| Load | About 4 operations per Analyze call. At the gateway's full capacity (~100 calls/s) that's ~400 ops/s, well within Standard C1 |
 | Data | Counters only, with a 2 s TTL. Nothing persistent; losing Redis loses nothing but the current second's counts |
 | Auth | Access key in the APIM connection string (sensitive in Terraform, never in the repo). If you regenerate the Redis keys, re-run the pipeline so APIM gets the new key |
 
@@ -127,7 +127,7 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 | PE subnet: an existing one, or a spoke VNet + PE subnet + NSG peered with the APIM VNet | `modules/platform/network.tf` | `existing_pe_subnet_id` switches between the two |
 | Private DNS zones for cognitiveservices, vaultcore and redis, linked to the APIM VNet | `modules/platform/dns.tf` | Or pass hub-owned zone IDs |
 | Key Vault (RBAC, private endpoint) and bootstrap signing keys | `modules/platform/keyvault.tf` | Keys are ephemeral and write-only, never stored in state |
-| Azure Managed Redis registered as the APIM external cache | `modules/platform/redis.tf` | **Required:** holds the per-pool, per-second counters that trigger overflow |
+| Azure Cache for Redis registered as the APIM external cache | `modules/platform/redis.tf` | **Required:** holds the per-pool, per-second counters that trigger overflow |
 | Log Analytics, and diagnostic settings for APIM and Key Vault | `modules/platform/monitoring.tf` | |
 | 7 DI accounts (2 general, 3 critical, 1 general overflow, 1 critical overflow): no public access, no local auth, private endpoint, `Cognitive Services User` for APIM | `modules/di-gateway/di_accounts.tf` | |
 | APIM backends with circuit breakers | `modules/di-gateway/apim_backends.tf` | `azapi`, `backends@2024-05-01` |
@@ -152,9 +152,9 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 - **Network:** `apim_vnet_id` is the VNet APIM integrates with. APIM must reach the PE subnet,
   either because the subnet is in that VNet (not the delegated integration subnet itself) or
   through the peering Terraform creates. NSGs and route tables on the integration subnet must
-  allow outbound 443 (DI, Key Vault) and 10000 (Redis) to it.
+  allow outbound 443 (DI, Key Vault) and 6380 (Redis) to it.
 - **DNS:** APIM must resolve `*.cognitiveservices.azure.com`, `*.vault.azure.net` and
-  `*.redis.azure.net` to the private endpoints. Terraform links the zones it creates to the
+  `*.redis.cache.windows.net` to the private endpoints. Terraform links the zones it creates to the
   APIM VNet. If the hub owns the zones, it must link them.
 - **Deploying identity:** Contributor on the DI resource group, API Management Service
   Contributor on the APIM instance, and User Access Administrator (or RBAC Administrator)
@@ -253,7 +253,7 @@ network: Terraform writes the bootstrap signing keys through Key Vault's private
 | `tenant-cell-map` and `di-host-map` stored as base64(JSON) | Raw JSON quotes placed inside `value="{{...}}"` attributes would break the policy XML |
 | Guardrails are `precondition`s, not `check` blocks | `check` blocks only warn |
 | `di_name_suffix` on DI account names and subdomains | DI subdomains are globally unique. Backend keys stay the bare member names |
-| Azure Managed Redis | Azure Cache for Redis is being retired for new deployments |
+| Azure Cache for Redis (not Azure Managed Redis) | Required by your platform standards. Microsoft has announced its retirement (2028); confirm new caches can still be created in your subscription |
 
 ## Verification points
 
@@ -282,7 +282,8 @@ Still open (validate in nonprod before rollout):
   diagnostic for per-tenant logging.
 - [ ] **External cache authentication:** APIM connects to Redis with a connection string that
   contains an access key. The key lives in Terraform state and APIM, never in the repo. Switch
-  to Entra auth if APIM supports it for Azure Managed Redis.
+  to Entra auth if APIM's external cache gains managed-identity support. Its ARM schema (through
+  2025-09-01-preview) only has `connectionString`, so today APIM needs the access key. **Open decision.**
 - [ ] **Redis outage behaviour:** confirm what APIM does on your tier when the external cache
   is unreachable (cache miss or policy error), and that Analyze keeps working (see
   [Redis](#redis-external-cache)).

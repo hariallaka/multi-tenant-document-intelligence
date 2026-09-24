@@ -51,6 +51,8 @@ module "platform" {
   dns_servers                   = var.dns_servers
   existing_private_dns_zone_ids = var.existing_private_dns_zone_ids
   redis_sku_name                = var.redis_sku_name
+  redis_capacity                = var.redis_capacity
+  redis_zones                   = var.redis_zones
   tags                          = var.tags
 }
 
