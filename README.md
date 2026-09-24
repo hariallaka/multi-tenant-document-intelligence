@@ -36,8 +36,8 @@ deployment profile this repo implements, which narrows the design to two pools (
 | Pools | **general**: 2 DI resources. **critical**: 3 DI resources. They share nothing |
 | Overflow | **Active at 90%.** One overflow pool per zone (`pool-overflow-general`, `pool-overflow-critical`, 1 DI each). When a pool reaches 90% of its capacity, further requests go to its zone's overflow pool instead of being rejected |
 | DI exposure | Private endpoints only, `public_network_access_enabled = false`, `local_auth_enabled = false` |
-| Authentication | APIM authenticates to DI and Key Vault with its managed identity: no DI keys and no secrets in the repo. **Exception (open decision):** APIM authenticates to Redis with an access key; see [Redis authentication](#redis-authentication-open-decision) |
-| Overflow counters | **Azure Cache for Redis** (Azure Managed Redis can't be used here), private endpoint only, same region as APIM and DI. **Requirement: Entra ID authentication**, not yet met |
+| Authentication | APIM authenticates to DI and Key Vault with its managed identity: no DI keys and no secrets in the repo. **One exception:** APIM authenticates to Redis with an access key that's never stored in Terraform state; see [Redis authentication](#redis-authentication-option-a) |
+| Overflow counters | **Azure Cache for Redis** (Azure Managed Redis can't be used here), private endpoint only, same region as APIM and DI. **Entra ID authentication enabled** for every client; APIM alone uses an access key (option A) |
 
 ### Overflow at 90% capacity
 
@@ -86,39 +86,44 @@ Redis holds the per-pool, per-second counters that trigger overflow. The policy 
 
 | Item | Setting |
 | --- | --- |
-| Service | Azure Cache for Redis, Standard C1 by default (`modules/platform/redis.tf`), registered as the APIM external cache. Premium with `redis_zones` for zone redundancy |
+| Service | Azure Cache for Redis, Standard C1 by default (`modules/platform/redis.tf`, deployed with `azapi`), registered as the APIM external cache. Premium with `redis_zones` for zone redundancy |
 | Network | Public access disabled, private endpoint in the PE subnet. APIM reaches it over VNet integration on TLS port 6380 (the non-TLS port is closed); the integration subnet's NSG must allow that outbound |
 | DNS | `privatelink.redis.cache.windows.net` linked to the APIM VNet. The cache is registered only after the link exists |
 | Region | Same as APIM and DI (plan fails otherwise). Each Analyze call makes 2–4 Redis round trips |
 | TLS | Minimum TLS 1.2 |
 | Load | About 4 operations per Analyze call. At the gateway's full capacity (~100 calls/s) that's ~400 ops/s, well within Standard C1 |
 | Data | Counters only, with a 2 s TTL. Nothing persistent; losing Redis loses nothing but the current second's counts |
-| Auth | **Today:** access key in the APIM connection string (sensitive in Terraform, never in the repo). If you regenerate the Redis keys, re-run the pipeline so APIM gets the new key. **Required:** Entra ID; see below |
+| Auth | Entra ID enabled on the cache. APIM uses an access key, read at apply time and never stored in Terraform state; see below |
 
 **If Redis is unavailable,** counter reads come back empty, so every pool looks below 90% and
 nothing spills. Requests still go to the home pools, and the circuit breakers and retries still
 apply. Overflow resumes when Redis recovers. Confirm in nonprod that a Redis outage produces cache
 misses rather than failed requests on your tier (open verification point below).
 
-### Redis authentication (open decision)
+### Redis authentication (option A)
 
-**Requirement:** APIM should authenticate to Azure Cache for Redis with Microsoft Entra ID (its
-managed identity), not an access key.
+**Requirement:** use Microsoft Entra ID for Redis authentication.
 
-**Blocker:** APIM's external cache (`Microsoft.ApiManagement/service/caches`) accepts only a
+**Constraint:** APIM's external cache (`Microsoft.ApiManagement/service/caches`) accepts only a
 `connectionString`. Its ARM schema from 2022 through `2025-09-01-preview` has no identity or
-auth-type setting, so APIM can't present an Entra token to Redis today. Entra auth can be turned
-on for the cache (for other clients), but disabling access keys would cut APIM off.
+auth-type setting, so APIM itself can't authenticate with Entra.
 
-| Option | Result | Trade-off |
-| --- | --- | --- |
-| **A. Entra on for the cache; APIM alone uses the access key** | Redis stays; any other client uses Entra. The key would be read at deploy time and written to APIM without being stored in Terraform state | One access key remains, used only by APIM |
-| **B. No Redis: counters in APIM's built-in cache** | No keys anywhere; nothing to run | Relies on the built-in cache being shared across gateway units; load test 4 must confirm spill starts near 90% |
-| **C. Entra only, access keys disabled** | Meets "Entra only" on paper | APIM can't connect, so overflow at 90% stops working |
+**Chosen: option A.**
 
-**Current state of the code:** access-key connection (the starting point for option A). If
-Microsoft adds managed-identity auth to APIM's external cache, switch to it and set
-`access_keys_authentication_enabled = false` on the cache.
+| Client | Authentication |
+| --- | --- |
+| Everyone except APIM (operators, future services) | **Microsoft Entra ID.** `aad-enabled` is on for the cache; grant access with `redis_entra_access` (Data Owner, Data Contributor or Data Reader) |
+| APIM external cache | **Access key**, the only one in use. Read at apply time through an ephemeral `listKeys` call and written to APIM through a write-only `sensitive_body`, so it is **never stored in Terraform state, plan files or the repo** |
+
+This is why the cache and its APIM registration use `azapi` instead of azurerm: both
+`azurerm_redis_cache` and `azurerm_api_management_redis_cache` keep the key in state.
+
+**Key rotation** without downtime: move APIM to the other key (`redis_apim_key`), apply, then
+regenerate the old one. If a key was regenerated while APIM was using it, bump
+`redis_key_version` and apply. See [`scripts/rotate-redis-key.md`](scripts/rotate-redis-key.md).
+
+Options considered: B (no Redis, counters in APIM's built-in cache, no keys at all) and C (Entra
+only, access keys disabled: APIM couldn't connect, so overflow would stop working).
 
 ### Other controls that still apply
 
@@ -149,7 +154,7 @@ raise member TPS through a support ticket, add a member, or add an overflow memb
 | PE subnet: an existing one, or a spoke VNet + PE subnet + NSG peered with the APIM VNet | `modules/platform/network.tf` | `existing_pe_subnet_id` switches between the two |
 | Private DNS zones for cognitiveservices, vaultcore and redis, linked to the APIM VNet | `modules/platform/dns.tf` | Or pass hub-owned zone IDs |
 | Key Vault (RBAC, private endpoint) and bootstrap signing keys | `modules/platform/keyvault.tf` | Keys are ephemeral and write-only, never stored in state |
-| Azure Cache for Redis registered as the APIM external cache | `modules/platform/redis.tf` | **Required:** holds the per-pool, per-second counters that trigger overflow |
+| Azure Cache for Redis (Entra ID enabled), its Entra access policy assignments, and the APIM external cache registration | `modules/platform/redis.tf` | `azapi`, so the access key never enters Terraform state. **Required:** holds the per-pool, per-second counters that trigger overflow |
 | Log Analytics, and diagnostic settings for APIM and Key Vault | `modules/platform/monitoring.tf` | |
 | 7 DI accounts (2 general, 3 critical, 1 general overflow, 1 critical overflow): no public access, no local auth, private endpoint, `Cognitive Services User` for APIM | `modules/di-gateway/di_accounts.tf` | |
 | APIM backends with circuit breakers | `modules/di-gateway/apim_backends.tf` | `azapi`, `backends@2024-05-01` |
@@ -195,7 +200,7 @@ infra/terraform/
 pipelines/              azure-pipelines.yml + templates/terraform-env.yml
 tests/policy/           Python port of the ticket HMAC logic + policy/Terraform consistency tests
 tests/load/             k6 scripts for the six design load tests
-scripts/                onboard-tenant.md, rotate-signing-key.sh, model-copy/ (stub)
+scripts/                onboard-tenant.md, rotate-signing-key.sh, rotate-redis-key.md, model-copy/ (stub)
 dispatcher/             batch dispatcher contract (stub)
 ```
 
@@ -302,10 +307,12 @@ Still open (validate in nonprod before rollout):
 - [ ] Whether retries land on a different member (load test 3, `tests/load/queries.kql`).
 - [ ] Whether the built-in `azuremonitor` logger exists on the instance. It is used by the API
   diagnostic for per-tenant logging.
-- [ ] **External cache authentication:** APIM connects to Redis with a connection string that
-  contains an access key. The key lives in Terraform state and APIM, never in the repo. Switch
-  to Entra auth if APIM's external cache gains managed-identity support. **Open decision:** see
-  [Redis authentication](#redis-authentication-open-decision).
+- [ ] **External cache authentication:** option A is implemented (Entra ID on the cache; APIM uses
+  an access key that's never stored in state). Recheck when upgrading the APIM API version: if the
+  caches resource gains a managed-identity setting, switch APIM to it and disable access keys.
+- [ ] **Write-only values:** on the first apply, confirm APIM's external cache shows as connected
+  (the connection string comes from an ephemeral `listKeys` call and `sensitive_body`, which need
+  Terraform 1.11+ and azapi 2.x).
 - [ ] **Redis outage behaviour:** confirm what APIM does on your tier when the external cache
   is unreachable (cache miss or policy error), and that Analyze keeps working (see
   [Redis](#redis-external-cache)).

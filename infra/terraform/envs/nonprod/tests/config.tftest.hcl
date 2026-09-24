@@ -21,21 +21,31 @@ mock_provider "azurerm" {
   }
 }
 
-mock_provider "azapi" {
-  mock_data "azapi_resource" {
-    defaults = {
-      id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
-      location = "Australia East"
-      output = {
-        sku            = "StandardV2"
-        public_access  = "Disabled"
-        vnet_type      = "External"
-        vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np/subnets/snet-apim-integration"
-        public_ip_id   = null
-        gateway_url    = "https://apim.azure-api.net"
-        identity_type  = "SystemAssigned"
-        principal_id   = "00000000-0000-0000-0000-000000000002"
-      }
+# Real azapi provider with dummy credentials: in a plan it validates bodies against
+# the embedded ARM schemas without calling Azure. Mock providers can't host the
+# ephemeral listKeys action. The APIM lookup is replaced by override_data below.
+provider "azapi" {
+  subscription_id            = "00000000-0000-0000-0000-000000000000"
+  tenant_id                  = "00000000-0000-0000-0000-000000000000"
+  client_id                  = "00000000-0000-0000-0000-000000000000"
+  client_secret              = "not-a-secret"
+  skip_provider_registration = true
+}
+
+override_data {
+  target = module.platform.data.azapi_resource.apim
+  values = {
+    id       = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-apim/providers/Microsoft.ApiManagement/service/apim"
+    location = "Australia East"
+    output = {
+      sku            = "StandardV2"
+      public_access  = "Disabled"
+      vnet_type      = "External"
+      vnet_subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-network-np/providers/Microsoft.Network/virtualNetworks/vnet-apim-np/subnets/snet-apim-integration"
+      public_ip_id   = null
+      gateway_url    = "https://apim.azure-api.net"
+      identity_type  = "SystemAssigned"
+      principal_id   = "00000000-0000-0000-0000-000000000002"
     }
   }
 }

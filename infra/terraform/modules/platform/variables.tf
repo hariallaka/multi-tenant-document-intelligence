@@ -153,6 +153,37 @@ variable "redis_zones" {
   default     = []
 }
 
+variable "redis_apim_key" {
+  description = "Which Redis access key APIM's connection string uses. Switch to rotate keys without downtime (see README)."
+  type        = string
+  default     = "primary"
+
+  validation {
+    condition     = contains(["primary", "secondary"], var.redis_apim_key)
+    error_message = "redis_apim_key must be primary or secondary."
+  }
+}
+
+variable "redis_key_version" {
+  description = "Bump after regenerating the key APIM uses, so Terraform re-sends the connection string. The key itself is never stored in state."
+  type        = string
+  default     = "1"
+}
+
+variable "redis_entra_access" {
+  description = "Entra ID principals granted data access to Redis (alias => { object_id, access_policy }). APIM is not listed: it uses the access key."
+  type = map(object({
+    object_id     = string
+    access_policy = optional(string, "Data Contributor")
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for p in var.redis_entra_access : contains(["Data Owner", "Data Contributor", "Data Reader"], p.access_policy)])
+    error_message = "access_policy must be Data Owner, Data Contributor or Data Reader."
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Monitoring and Key Vault
 # ---------------------------------------------------------------------------

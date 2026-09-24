@@ -110,6 +110,27 @@ variable "redis_zones" {
   default     = []
 }
 
+variable "redis_apim_key" {
+  description = "Redis access key APIM uses (primary or secondary)."
+  type        = string
+  default     = "primary"
+}
+
+variable "redis_key_version" {
+  description = "Bump after regenerating the key APIM uses."
+  type        = string
+  default     = "1"
+}
+
+variable "redis_entra_access" {
+  description = "Entra principals granted Redis data access."
+  type = map(object({
+    object_id     = string
+    access_policy = optional(string, "Data Contributor")
+  }))
+  default = {}
+}
+
 variable "entra_tenant_id" {
   description = "Entra directory ID."
   type        = string

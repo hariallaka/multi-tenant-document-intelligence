@@ -21,8 +21,10 @@ requests spill to overflow at 90% of pool capacity instead of being rejected.
   The routing port in `tests/policy/routing.py` must match `op-analyze.xml`.
 - Overflow counters use `caching-type="external"` (the Azure Cache for Redis external cache), never the
   built-in cache. APIM, Redis and DI must be in the same region (guardrail). Azure Managed Redis can't be used.
-- Required: Entra ID auth from APIM to Redis. APIM's external cache only takes a connection string, so it
-  still uses an access key: an open decision recorded in the README ("Redis authentication").
+- Redis auth is option A: Entra ID enabled on the cache for every client; APIM's external cache (which only
+  takes a connection string) uses an access key that must never enter Terraform state. The cache and APIM
+  cache registration stay on `azapi` (ephemeral `listKeys` + write-only `sensitive_body`); never switch them
+  to `azurerm_redis_cache` / `azurerm_api_management_redis_cache`, which store the key in state.
 - APIM backends and pools use `azapi_resource` pinned to `Microsoft.ApiManagement/service/backends@2024-05-01`
   (`local.apim_backends_type`). Provider versions are pinned in `envs/*/main.tf`.
 - The Result operation targets a single backend: never a pool, never a retry.

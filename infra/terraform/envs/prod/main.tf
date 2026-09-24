@@ -53,6 +53,9 @@ module "platform" {
   redis_sku_name                = var.redis_sku_name
   redis_capacity                = var.redis_capacity
   redis_zones                   = var.redis_zones
+  redis_apim_key                = var.redis_apim_key
+  redis_key_version             = var.redis_key_version
+  redis_entra_access            = var.redis_entra_access
   tags                          = var.tags
 }
 
@@ -93,6 +96,11 @@ module "di_gateway" {
 output "apim_gateway_host" {
   description = "Gateway host of the existing APIM instance."
   value       = module.platform.apim_gateway_host
+}
+
+output "redis_name" {
+  description = "Azure Cache for Redis holding the overflow counters."
+  value       = module.platform.redis_name
 }
 
 output "key_vault_name" {

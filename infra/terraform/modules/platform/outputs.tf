@@ -48,7 +48,7 @@ output "apim_gateway_host" {
 output "apim_principal_id" {
   description = "APIM system-assigned identity object ID."
   value       = local.apim_principal_id
-  depends_on  = [terraform_data.apim_guardrails, azurerm_role_assignment.apim_kv, azurerm_api_management_redis_cache.this]
+  depends_on  = [terraform_data.apim_guardrails, azurerm_role_assignment.apim_kv, azapi_resource.apim_cache]
 }
 
 output "signing_secret_id" {
@@ -77,4 +77,9 @@ output "apim_logger_id" {
   description = "Built-in azuremonitor logger, used by the API diagnostic."
   value       = "${local.apim_id}/loggers/azuremonitor"
   depends_on  = [azurerm_monitor_diagnostic_setting.apim]
+}
+
+output "redis_name" {
+  description = "Azure Cache for Redis holding the overflow counters (Entra enabled; APIM uses an access key)."
+  value       = azapi_resource.redis.name
 }

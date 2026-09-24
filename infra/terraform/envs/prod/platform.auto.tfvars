@@ -34,6 +34,17 @@ pe_subnet_prefix   = "10.60.0.0/27"
 redis_sku_name = "Standard"
 redis_capacity = 1
 
+# Redis authentication (option A): Entra ID is enabled on the cache for every client
+# except APIM, whose external cache needs an access key. The key is read at apply time
+# and never stored in Terraform state. Rotate: see scripts/rotate-redis-key.md.
+redis_apim_key    = "primary"
+redis_key_version = "1"
+
+# Entra principals that may read/write the cache directly (none needed by the gateway).
+# redis_entra_access = {
+#   "daas-ops" = { object_id = "<entra object id>", access_policy = "Data Reader" }
+# }
+
 entra_tenant_id   = "00000000-0000-0000-0000-000000000000"
 gateway_audience  = "api://di-gateway-prod"
 dispatcher_app_id = "00000000-0000-0000-0000-00000000d15a"
